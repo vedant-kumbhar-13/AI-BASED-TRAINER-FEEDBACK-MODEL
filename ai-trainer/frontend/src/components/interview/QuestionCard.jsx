@@ -232,7 +232,7 @@ export default function QuestionCard({
         </div>
 
         {/* Question text */}
-        <p style={s.questionText}>{question.text || '…'}</p>
+        <p style={s.questionText}>{question.text || question.question_text || '…'}</p>
 
         {/* Live transcript — only during recording */}
         {phase === 'recording' && (

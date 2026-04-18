@@ -12,6 +12,7 @@ from django.conf import settings
 import json
 import logging
 import re
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +20,59 @@ logger = logging.getLogger(__name__)
 class GeminiService:
     """
     Service class for Google Gemini AI interactions.
+    Uses the shared key rotation pool from services.openai_service.
     """
-    
+
     def __init__(self):
-        """Initialize Gemini with API key from settings."""
-        self.api_key = settings.GEMINI_API_KEY
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not configured in settings")
-        
-        genai.configure(api_key=self.api_key)
+        """Initialize Gemini using the shared key rotation pool."""
+        try:
+            # Use the same pool as openai_service — avoids duplicate key reading
+            from services.openai_service import _get_api_keys, _configure_next_key
+            self._api_keys    = _get_api_keys()
+            self._key_idx     = 0
+            self._configure   = _configure_next_key
+        except Exception:
+            # Fallback: read keys directly if the import fails
+            raw = getattr(settings, 'GEMINI_API_KEYS', None) or getattr(settings, 'GEMINI_API_KEY', '')
+            if isinstance(raw, (list, tuple)):
+                self._api_keys = [k.strip() for k in raw if k.strip() and k.strip().startswith('AIzaSy')]
+            else:
+                self._api_keys = [k.strip() for k in str(raw).split(',') if k.strip().startswith('AIzaSy')]
+            if not self._api_keys:
+                raise ValueError("No valid GEMINI_API_KEY found. Keys must start with 'AIzaSy'.")
+            self._key_idx = 0
+            self._configure = None
+
+        self._init_model()
+
+    def _init_model(self):
+        """Configure the SDK with current key and create model instance."""
+        key = self._api_keys[self._key_idx]
+        genai.configure(api_key=key)
         self.model = genai.GenerativeModel('gemini-2.5-flash')
-        
+
+    def _rotate_key(self):
+        """Switch to next key on 429 quota hit."""
+        self._key_idx = (self._key_idx + 1) % len(self._api_keys)
+        self._init_model()
+        return self._key_idx
+
+    def _call_with_rotation(self, prompt: str) -> str:
+        """Call Gemini with automatic key rotation on 429. Returns response text."""
+        last_error = None
+        for _ in range(len(self._api_keys)):
+            try:
+                response = self.model.generate_content(prompt)
+                return response.text.strip()
+            except Exception as e:
+                last_error = e
+                err = str(e)
+                if '429' in err or 'quota' in err.lower() or 'RATE_LIMIT' in err or 'API_KEY_INVALID' in err:
+                    self._rotate_key()
+                    continue
+                raise
+        raise RuntimeError(f"All {len(self._api_keys)} keys failed. Last: {last_error}")
+
     def generate_interview_question(
         self,
         interview_type: str,

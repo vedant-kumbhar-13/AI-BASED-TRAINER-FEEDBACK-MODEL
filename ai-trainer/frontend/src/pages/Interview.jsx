@@ -1,7 +1,7 @@
 // Main interview controller — state machine
 // This is the top-level orchestrator for the entire interview flow.
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
 import { useTTS }               from '../hooks/useTTS';
@@ -23,45 +23,60 @@ import InterviewResults from './InterviewResults';
 
 // ── Phase constants ──────────────────────────────────────────────────────────
 const PHASES = Object.freeze({
-  BROWSER_CHECK:   'BROWSER_CHECK',
-  MIC_PERMISSION:  'MIC_PERMISSION',
+  BROWSER_CHECK:    'BROWSER_CHECK',
+  MIC_PERMISSION:   'MIC_PERMISSION',
   LOADING_QUESTIONS:'LOADING_QUESTIONS',
-  PRE_BRIEF:       'PRE_BRIEF',
-  SPEAKING:        'SPEAKING',
-  COUNTDOWN:       'COUNTDOWN',
-  RECORDING:       'RECORDING',
-  SAVING_ANSWER:   'SAVING_ANSWER',
-  REVIEW:          'REVIEW',
-  SUBMITTING:      'SUBMITTING',
-  RESULTS:         'RESULTS',
-  ERROR:           'ERROR',
+  PRE_BRIEF:        'PRE_BRIEF',
+  SPEAKING:         'SPEAKING',
+  COUNTDOWN:        'COUNTDOWN',
+  RECORDING:        'RECORDING',
+  SAVING_ANSWER:    'SAVING_ANSWER',
+  REVIEW:           'REVIEW',
+  SUBMITTING:       'SUBMITTING',
+  RESULTS:          'RESULTS',
+  ERROR:            'ERROR',
 });
 
 /**
  * Interview — main state-machine controller.
- * Props: { resumeId }
+ * Props: { resumeId, interviewType }
  */
-export default function Interview({ resumeId }) {
+export default function Interview({ resumeId, interviewType = 'Technical' }) {
   // ── State ──────────────────────────────────────────────────────────────
-  const [phase,       setPhase]       = useState(PHASES.BROWSER_CHECK);
-  const [questions,   setQuestions]   = useState([]);
-  const [currentIdx,  setCurrentIdx]  = useState(0);
-  const [sessionId,   setSessionId]   = useState(null);
-  const [results,     setResults]     = useState(null);
-  const [error,       setError]       = useState(null);
-  const [countdown,   setCountdown]   = useState(2);
-  const [textFallback,setTextFallback]= useState(false);
+  const [phase,        setPhase]       = useState(PHASES.BROWSER_CHECK);
+  const [questions,    setQuestions]   = useState([]);
+  const [currentIdx,   setCurrentIdx]  = useState(0);
+  const [sessionId,    setSessionId]   = useState(null);
+  const [results,      setResults]     = useState(null);
+  const [error,        setError]       = useState(null);
+  const [countdown,    setCountdown]   = useState(2);
+  const [textFallback, setTextFallback]= useState(false);
 
-  // Stable ref for currentIdx so async callbacks read latest value
+  // Stable refs — async callbacks always read latest values without stale closures
   const currentIdxRef = useRef(0);
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
 
-  // Stable ref for questions
   const questionsRef = useRef([]);
   useEffect(() => { questionsRef.current = questions; }, [questions]);
 
+  // phaseRef — lets handleSilence read the current phase without being re-created
+  const phaseRef = useRef(PHASES.BROWSER_CHECK);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+
   // Guard: prevent React 18 Strict Mode double-invocation of startInterview()
   const isStartingRef = useRef(false);
+
+  // ── FIX: stable silence callback indirection ───────────────────────────
+  // Problem: useSilenceDetector(handleSilence) is called at line ~85,
+  // but handleSilence is a useCallback declared later at ~120.
+  // useCallback is NOT hoisted → the hook received `undefined` → white screen crash.
+  //
+  // Solution: pass a stable wrapper ref to the hook. The wrapper calls
+  // handleSilenceRef.current which is updated each render to the real function.
+  const handleSilenceRef = useRef(null);
+  const stableHandleSilence = useCallback(() => {
+    if (handleSilenceRef.current) handleSilenceRef.current();
+  }, []); // identity never changes — safe to pass to the hook
 
   // ── Hooks ──────────────────────────────────────────────────────────────
   const { speak, stopSpeaking } = useTTS();
@@ -75,7 +90,7 @@ export default function Interview({ resumeId }) {
     startSilenceDetection,
     stopSilenceDetection,
     resetSilenceTimer,
-  } = useSilenceDetector(handleSilence, 3000);
+  } = useSilenceDetector(stableHandleSilence, 3000); // ← uses stable wrapper
 
   const {
     saveSession, loadSession,
@@ -91,7 +106,6 @@ export default function Interview({ resumeId }) {
       setSessionId(saved.sessionId);
       setQuestions(saved.questions);
       setCurrentIdx(savedIdx);
-      // Jump straight to mic permission — we have questions already
       setPhase(PHASES.MIC_PERMISSION);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -102,7 +116,7 @@ export default function Interview({ resumeId }) {
     if (phase === PHASES.RECORDING && transcript) {
       resetSilenceTimer();
     }
-  }, [transcript]);
+  }, [transcript]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Effect 3: mic permission denied → ERROR ───────────────────────────
   useEffect(() => {
@@ -112,18 +126,21 @@ export default function Interview({ resumeId }) {
     }
   }, [sttError]);
 
-  // ── handleSilence — triggered by useSilenceDetector after 3s ──────────
-  function handleSilence() {
-    if (phase === PHASES.RECORDING) {
-      finalizeAnswer();
+  // ── handleSilence — triggered by useSilenceDetector after 3 s ─────────
+  // Reads phaseRef so it never closes over a stale phase value.
+  const handleSilence = useCallback(() => {
+    if (phaseRef.current === PHASES.RECORDING) {
+      finalizeAnswer(); // eslint-disable-line no-use-before-define
     }
-  }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── runQuestion(index) — async, drives speaking → countdown → recording ─
+  // Keep the ref pointing to the latest version (runs synchronously each render)
+  handleSilenceRef.current = handleSilence;
+
+  // ── runQuestion(index) — async: speaking → countdown → recording ───────
   async function runQuestion(index) {
     const qs = questionsRef.current;
 
-    // All questions answered → go to review
     if (index >= qs.length) {
       setPhase(PHASES.REVIEW);
       return;
@@ -131,20 +148,19 @@ export default function Interview({ resumeId }) {
 
     const q = qs[index];
 
-    // 1. Reset transcript, persist index
     resetTranscript();
     saveCurrentIndex(index);
 
-    // 2. SPEAKING phase — TTS reads the question aloud
+    // 1. SPEAKING — TTS reads the question aloud
     stopSpeaking();
     setPhase(PHASES.SPEAKING);
     try {
       await speak(`Question ${index + 1}. ${q.text || q.question_text}`);
     } catch {
-      // TTS failed (no voice available) — skip to countdown
+      // TTS failed — skip to countdown
     }
 
-    // 3. COUNTDOWN phase — 2 → 1 → 0
+    // 2. COUNTDOWN — 2 → 1 → 0
     setPhase(PHASES.COUNTDOWN);
     setCountdown(2);
     await new Promise((resolve) => {
@@ -152,14 +168,11 @@ export default function Interview({ resumeId }) {
       const tick = setInterval(() => {
         count -= 1;
         setCountdown(count);
-        if (count <= 0) {
-          clearInterval(tick);
-          resolve();
-        }
+        if (count <= 0) { clearInterval(tick); resolve(); }
       }, 900);
     });
 
-    // 4. RECORDING phase — start mic + silence detector
+    // 3. RECORDING — start mic + silence detector
     setPhase(PHASES.RECORDING);
     startRecording();
     startSilenceDetection();
@@ -194,37 +207,42 @@ export default function Interview({ resumeId }) {
 
   // ── startInterview() — fetch questions from backend ───────────────────
   async function startInterview() {
-    // Prevent double-call from React 18 Strict Mode or rapid re-renders
     if (isStartingRef.current) return;
     isStartingRef.current = true;
 
     setPhase(PHASES.LOADING_QUESTIONS);
     try {
-      const data = await startSession(resumeId);
+      const data = await startSession(resumeId, interviewType);
       setSessionId(data.session_id);
       setQuestions(data.questions);
       saveSession(data.session_id, data.questions);
       setCurrentIdx(0);
       setPhase(PHASES.PRE_BRIEF);
     } catch (err) {
-      // 409 = active session already exists — clear it and show a clean message
       const serverMsg = err?.message || '';
+      let userMsg;
+
       if (serverMsg.toLowerCase().includes('active session')) {
-        clearSession([]);  // wipe any stale localStorage
-        setError(
+        clearSession([]);
+        userMsg =
           'A previous interview session is still active. ' +
-          'Click "Try Again" to start fresh — the old session has been cleared.'
-        );
+          'Click "Try Again" to start fresh — the old session has been cleared.';
+      } else if (serverMsg.toLowerCase().includes('no resume found')) {
+        userMsg = 'Please upload a resume first, or use Quick Interview which works without one.';
+      } else if (serverMsg.toLowerCase().includes('question generation failed')) {
+        userMsg = 'Could not generate questions right now (AI service is busy). Please try again in a moment.';
       } else {
-        setError(serverMsg || 'Failed to start interview.');
+        userMsg = serverMsg || 'Failed to start interview. Please try again.';
       }
+
+      setError(userMsg);
       setPhase(PHASES.ERROR);
     } finally {
       isStartingRef.current = false;
     }
   }
 
-  // ── submitInterview() — send all answers to Gemini for evaluation ──────
+  // ── submitInterview() — send all answers for AI evaluation ────────────
   async function submitInterview() {
     setPhase(PHASES.SUBMITTING);
     try {
@@ -240,21 +258,17 @@ export default function Interview({ resumeId }) {
       setResults(evaluation);
       setPhase(PHASES.RESULTS);
     } catch (err) {
-      // Answers are still in localStorage — user can retry
       const msg = err?.response?.data?.error || err.message || 'Submission failed. Your answers are saved.';
       setError(msg);
       setPhase(PHASES.ERROR);
     }
   }
 
-  // ── handleReRecord(index) — jump back to record a specific question ────
+  // ── handleReRecord(index) — jump back to re-record a question ─────────
   function handleReRecord(index) {
     setCurrentIdx(index);
     runQuestion(index);
   }
-
-  // ── Shared page wrapper ────────────────────────────────────────────────
-  const Wrap = ({ children }) => <>{children}</>;
 
   // ── RENDER — phase switch ──────────────────────────────────────────────
   switch (phase) {
@@ -273,7 +287,14 @@ export default function Interview({ resumeId }) {
     case PHASES.MIC_PERMISSION:
       return (
         <MicPermission
-          onGranted={() => startInterview()}
+          onGranted={() => {
+            // If questions already loaded (page-refresh recovery), resume — don't start fresh
+            if (questionsRef.current.length > 0) {
+              runQuestion(currentIdxRef.current);
+            } else {
+              startInterview();
+            }
+          }}
           onDenied={() => {
             setError('Microphone access is required for the voice interview.');
             setPhase(PHASES.ERROR);
@@ -345,11 +366,9 @@ export default function Interview({ resumeId }) {
               {error || 'An unexpected error occurred.'}
             </p>
             <button
-              onClick={async () => {
-                // Mark any stuck in_progress session as abandoned via backend
-                // (best effort — ignore errors)
+              onClick={() => {
                 setError(null);
-                isStartingRef.current = false;  // reset guard so startInterview can run again
+                isStartingRef.current = false;
                 setPhase(PHASES.BROWSER_CHECK);
               }}
               style={{

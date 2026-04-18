@@ -140,16 +140,14 @@ def start_interview(request):
 
     Request body:
     {
-        "resume_id": "uuid",           // required
+        "resume_id": "uuid",           // optional — omit for Quick Interview
         "interview_type": "Technical",  // HR | Technical | Behavioral | Mixed
         "total_questions": 8
     }
 
     Responses:
         201 — { session_id, questions: [{id, order, text, type}] }
-        400 — { error: 'resume_id is required' }
-        404 — { error: 'Resume not found' }
-        409 — { error: 'Active session exists', session_id: str }
+        404 — { error: 'Resume not found' }  (only when resume_id is given but invalid)
         503 — { error: 'Question generation failed: <msg>' }
     """
     resume_id = request.data.get('resume_id')
@@ -165,8 +163,10 @@ def start_interview(request):
         existing.save()
         logger.info(f"Auto-abandoned stuck session {existing.id} for user {request.user.id}")
 
-
-    # Resolve the resume — use provided resume_id, or fall back to the user's latest resume
+    # Resolve the resume:
+    # 1. If resume_id given   → look it up (404 if not found)
+    # 2. If no resume_id      → try the user's latest uploaded resume
+    # 3. If no resume exists  → use a generic context (Quick Interview mode)
     resume = None
     if resume_id:
         try:
@@ -179,18 +179,28 @@ def start_interview(request):
     else:
         # Fallback: use the most recently uploaded resume for this user
         resume = Resume.objects.filter(user=request.user).order_by('-created_at').first()
-        if not resume:
-            return Response(
-                {'error': 'No resume found. Please upload a resume first.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        # resume may still be None here — that's OK for Quick Interview
+        # generate_questions() accepts None and uses a generic context in that case
 
     interview_type = request.data.get('interview_type', 'Technical')
-    total_questions = int(request.data.get('total_questions', 8))
+    # Clamp to safe range — prevents malicious requests generating 1000 questions
+    total_questions = max(3, min(20, int(request.data.get('total_questions', 8))))
+
+    # Build a quick-interview context object when no real resume is available
+    context_resume = resume
+    if context_resume is None:
+        # Minimal dict-like context so generate_questions() can build a prompt
+        context_resume = {
+            'skills':     [],
+            'experience': [],
+            'education':  [],
+            'projects':   [],
+            'summary':    '',
+        }
 
     # Generate questions using Gemini — respect user's chosen count
     try:
-        raw_questions = generate_questions(resume, num_questions=total_questions)
+        raw_questions = generate_questions(context_resume, num_questions=total_questions)
     except Exception as e:
         logger.error(f"Question generation failed: {e}")
         return Response(
@@ -527,11 +537,21 @@ def submit_all(request):
                 continue
             try:
                 question = session.questions.get(question_number=q_index)
-                # Find matching answer from the submitted payload
+                q_id_str = str(question.id)
+
+                # Match by questionId UUID first (most reliable, handles re-recorded answers)
                 matching_answer = next(
-                    (a for i, a in enumerate(answers, 1) if i == q_index),
+                    (a for a in answers
+                     if str(a.get('questionId', a.get('question_id', ''))) == q_id_str),
                     None
                 )
+                # Fallback: match by position if UUID not found
+                if not matching_answer:
+                    matching_answer = next(
+                        (a for i, a in enumerate(answers, 1) if i == q_index),
+                        None
+                    )
+
                 answer_text = (
                     matching_answer.get('answerText', matching_answer.get('answer_text', ''))
                     if matching_answer else '[No answer provided]'

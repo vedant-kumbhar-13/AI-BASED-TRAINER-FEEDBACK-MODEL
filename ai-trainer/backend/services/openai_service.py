@@ -1,31 +1,70 @@
 """
 Gemini AI API calls — question generation and holistic interview evaluation.
 Wraps google-generativeai SDK (v0.7+) for use across the interview app.
+Supports automatic key rotation when a key hits the free-tier 429 quota.
 """
 
 import os
 import re
 import json
+import time
 
 import google.generativeai as genai
 
 # ---------------------------------------------------------------------------
-# SDK Configuration — reads GEMINI_API_KEY via Django settings (loaded from
-# .env by python-decouple). Fall back to os.getenv for non-Django contexts.
+# API Key Rotation Pool
+# Reads GEMINI_API_KEYS (comma-separated) from Django settings / env.
+# Falls back to the single GEMINI_API_KEY if the list is not set.
 # ---------------------------------------------------------------------------
-def _get_api_key() -> str:
+def _get_api_keys() -> list:
+    """Return an ordered list of valid Gemini API keys (must start with AIzaSy)."""
     try:
         from django.conf import settings
-        key = getattr(settings, 'GEMINI_API_KEY', None)
-        if key:
-            return key
+        # Prefer the explicit rotation list
+        keys_raw = getattr(settings, 'GEMINI_API_KEYS', None) or getattr(settings, 'GEMINI_API_KEY', '')
     except Exception:
-        pass
-    return os.getenv('GEMINI_API_KEY', '')
+        keys_raw = os.getenv('GEMINI_API_KEYS', '') or os.getenv('GEMINI_API_KEY', '')
 
-genai.configure(api_key=_get_api_key())
+    # Normalise: keys_raw may already be a list (decouple Csv) or a plain string
+    if isinstance(keys_raw, (list, tuple)):
+        candidates = [k.strip() for k in keys_raw if k.strip()]
+    else:
+        candidates = [k.strip() for k in str(keys_raw).split(',') if k.strip()]
+
+    # Only keep real Gemini API keys — they always start with "AIzaSy"
+    valid = [k for k in candidates if k.startswith('AIzaSy')]
+    if not valid:
+        raise ValueError(
+            "No valid GEMINI_API_KEY found. Keys must start with 'AIzaSy'. "
+            "Get a key from https://aistudio.google.com/app/apikey"
+        )
+    return valid
+
+
+# Load keys once at module import time
+_API_KEYS: list = _get_api_keys()
+_current_key_idx: int = 0
+
+def _configure_next_key(force_idx: int | None = None) -> str:
+    """Rotate to the next API key in the pool and configure the SDK. Returns the key used."""
+    global _current_key_idx
+    if force_idx is not None:
+        _current_key_idx = force_idx % len(_API_KEYS)
+    key = _API_KEYS[_current_key_idx]
+    genai.configure(api_key=key)
+    return key
+
+# Configure on first load with the first key
+_configure_next_key(0)
 
 MODEL_NAME = 'gemini-2.5-flash'
+
+
+def _rotate_key_on_quota(current_idx: int) -> int:
+    """Rotate to next key when 429 is hit. Returns new index."""
+    next_idx = (current_idx + 1) % len(_API_KEYS)
+    _configure_next_key(next_idx)
+    return next_idx
 
 
 # ---------------------------------------------------------------------------
@@ -168,20 +207,35 @@ Format:
     )
 
     # -----------------------------------------------------------------------
-    # Gemini API call
+    # Gemini API call — with automatic key rotation on 429 quota errors
     # -----------------------------------------------------------------------
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=system_instruction,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.7,
-            max_output_tokens=8192,
-            response_mime_type="application/json",
-        )
-    )
+    key_idx = _current_key_idx
+    last_error = None
 
-    response = model.generate_content(user_prompt)
-    raw_text = response.text.strip()
+    for attempt in range(len(_API_KEYS)):
+        try:
+            _configure_next_key(key_idx)
+            model = genai.GenerativeModel(
+                model_name=MODEL_NAME,
+                system_instruction=system_instruction,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=8192,
+                    response_mime_type="application/json",
+                )
+            )
+            response = model.generate_content(user_prompt)
+            raw_text = response.text.strip()
+            break  # success — exit retry loop
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            if '429' in err_str or 'quota' in err_str.lower() or 'RATE_LIMIT' in err_str:
+                key_idx = (key_idx + 1) % len(_API_KEYS)
+                continue  # try next key
+            raise  # non-quota error — re-raise immediately
+    else:
+        raise ValueError(f"All {len(_API_KEYS)} API keys are quota-exhausted. Last error: {last_error}")
 
     # Strip accidental backtick code fences (```json ... ```)
     raw_text = re.sub(r'^```(?:json)?\s*', '', raw_text)
@@ -294,30 +348,50 @@ CRITICAL LIMITS:
         )
 
         # -----------------------------------------------------------------------
-        # Gemini API call — low temperature for consistent, fair scoring
+        # Gemini API call — with automatic key rotation on 429 quota errors
         # -----------------------------------------------------------------------
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=system_instruction,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.2,
-                max_output_tokens=8192,
-                response_mime_type="application/json",
-            )
-        )
+        key_idx = _current_key_idx
+        last_error = None
+        raw_text = ''
 
-        response = model.generate_content(user_prompt)
-        raw_text = response.text.strip()
+        for attempt in range(len(_API_KEYS)):
+            try:
+                _configure_next_key(key_idx)
+                model = genai.GenerativeModel(
+                    model_name=MODEL_NAME,
+                    system_instruction=system_instruction,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.2,
+                        max_output_tokens=8192,
+                        response_mime_type="application/json",
+                    )
+                )
+                response = model.generate_content(user_prompt)
+                raw_text = response.text.strip()
+                break  # success — exit retry loop
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                if '429' in err_str or 'quota' in err_str.lower() or 'RATE_LIMIT' in err_str:
+                    key_idx = (key_idx + 1) % len(_API_KEYS)
+                    continue  # try next key
+                raise ValueError(f"Interview evaluation failed: {str(e)}")
+        else:
+            raise ValueError(f"All {len(_API_KEYS)} API keys are quota-exhausted. Last error: {last_error}")
 
         # Strip accidental backtick code fences
         raw_text = re.sub(r'^```(?:json)?\s*', '', raw_text)
         raw_text = re.sub(r'\s*```$', '', raw_text)
         raw_text = raw_text.strip()
 
-        evaluation = json.loads(raw_text)
+        try:
+            evaluation = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Gemini returned invalid JSON for evaluation: {e}\nRaw: {raw_text[:300]}")
+
         return evaluation
 
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Gemini returned invalid JSON for evaluation: {e}\nRaw: {raw_text[:300]}")
+    except (ValueError, json.JSONDecodeError):
+        raise  # re-raise our own formatted errors as-is
     except Exception as e:
         raise ValueError(f"Interview evaluation failed: {str(e)}")

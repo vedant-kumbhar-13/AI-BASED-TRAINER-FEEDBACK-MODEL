@@ -74,7 +74,8 @@ export const Quiz = () => {
         answers,
         score,
         correctCount,
-        totalQuestions: questions.length
+        totalQuestions: questions.length,
+        quizQuestionIds: questions.map(q => q.id)
       }
     });
   }, [answers, questions, topicId, navigate, isSubmitting]);
@@ -119,11 +120,6 @@ export const Quiz = () => {
                   <h1 className="text-lg font-bold text-gray-800">{topic.name} Quiz</h1>
                   <p className="text-xs text-gray-500">
                     {questions.length} questions • {QUIZ_TIME_SECONDS / 60} minutes
-                    {allQuestions.length > QUIZ_QUESTION_COUNT && (
-                      <span className="text-primary ml-1">
-                        (from {allQuestions.length} available)
-                      </span>
-                    )}
                   </p>
                 </div>
               </div>

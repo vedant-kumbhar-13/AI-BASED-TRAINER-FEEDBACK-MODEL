@@ -8,6 +8,7 @@ interface QuizResultsState {
   score: number;
   correctCount: number;
   totalQuestions: number;
+  quizQuestionIds: number[];
 }
 
 export const QuizResults = () => {
@@ -16,7 +17,12 @@ export const QuizResults = () => {
   const state = location.state as QuizResultsState | null;
 
   const topic = topicId ? getTopicById(parseInt(topicId)) : null;
-  const questions = topicId ? getQuestionsByTopicId(parseInt(topicId)) : [];
+  const allQuestions = topicId ? getQuestionsByTopicId(parseInt(topicId)) : [];
+
+  // Filter to only the questions that were in the actual quiz
+  const questions = state?.quizQuestionIds
+    ? allQuestions.filter(q => state.quizQuestionIds.includes(q.id))
+    : allQuestions;
 
   if (!topic || !state) {
     return (

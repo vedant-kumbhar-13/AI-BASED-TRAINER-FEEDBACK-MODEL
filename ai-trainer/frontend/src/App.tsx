@@ -18,10 +18,11 @@ import { Learning } from './pages/Learning';
 import { Quiz } from './pages/Quiz';
 import { QuizResults } from './pages/QuizResults';
 
-// Wrapper: reads resumeId from localStorage so Interview receives it as a prop
+// Wrapper: reads resumeId and interviewType from localStorage so Interview receives them as props
 function InterviewWrapper() {
   const resumeId = localStorage.getItem('resume_id') || '';
-  return <Interview resumeId={resumeId} />;
+  const interviewType = localStorage.getItem('interview_type') || 'Technical';
+  return <Interview resumeId={resumeId} interviewType={interviewType} />;
 }
 
 function App() {

@@ -4,14 +4,16 @@
 import apiClient from '../api';
 
 /**
- * startSession(resumeId)
+ * startSession(resumeId, interviewType, totalQuestions)
  * POST /api/interview/start/
  * Returns: { session_id, questions: [{id, order, text, type}] }
  */
-export async function startSession(resumeId) {
+export async function startSession(resumeId, interviewType = 'Technical', totalQuestions = 8) {
   try {
     const response = await apiClient.post('/interview/start/', {
-      resume_id: resumeId,
+      resume_id:       resumeId || undefined,
+      interview_type:  interviewType,
+      total_questions: totalQuestions,
     });
     return response.data;
   } catch (error) {

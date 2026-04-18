@@ -89,7 +89,8 @@ export default function BrowserCheck({ onContinue, onFallback }) {
 
             <h2 style={s.title}>Voice Interview Ready</h2>
             <p style={s.sub}>
-              Chrome detected. Microphone access will be requested next.
+              Voice interview is supported in your browser. Microphone access will be
+              requested next.
             </p>
 
             <button

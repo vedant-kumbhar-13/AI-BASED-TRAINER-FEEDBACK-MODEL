@@ -3,20 +3,20 @@
 /**
  * ScoreGauge — circular badge showing a numeric score.
  * Props:
- *   score  {number}          — 0–10
+ *   score  {number}          — 0–100
  *   label  {string}          — text below the number
  *   size   {'large'|'small'} — large=main gauge, small=category row
  */
 export default function ScoreGauge({ score = 0, label = '', size = 'large' }) {
   const num = parseFloat(score) || 0;
 
-  // ── Colour by score range ────────────────────────────────────────────────
+  // ── Colour by score range (0–100 scale) ─────────────────────────────────
   let bgTint, borderColor, textColor;
-  if (num < 5) {
+  if (num < 50) {
     bgTint      = 'rgba(183,28,28,0.18)';
     borderColor = '#ef4444';
     textColor   = '#fca5a5';
-  } else if (num < 7) {
+  } else if (num < 70) {
     bgTint      = 'rgba(230,81,0,0.18)';
     borderColor = '#f97316';
     textColor   = '#fdba74';
@@ -68,7 +68,7 @@ export default function ScoreGauge({ score = 0, label = '', size = 'large' }) {
     <div style={s.wrap}>
       <div style={s.circle}>
         <span style={s.num}>{num.toFixed(1)}</span>
-        <span style={s.outOf}>/10</span>
+        <span style={s.outOf}>/100</span>
       </div>
       {label && <span style={s.label}>{label}</span>}
     </div>

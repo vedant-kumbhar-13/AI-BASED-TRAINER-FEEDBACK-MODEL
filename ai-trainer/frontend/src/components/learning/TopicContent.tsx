@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import type { Topic } from '../../types/learning';
 import { VideoPlayer } from './VideoPlayer';
-import { getProgress, getQuestionsByTopicId } from '../../data/aptitudeData';
+import { getProgress } from '../../data/aptitudeData';
 
 interface TopicContentProps {
   topic: Topic;
@@ -10,7 +10,7 @@ interface TopicContentProps {
 export const TopicContent = ({ topic }: TopicContentProps) => {
   const navigate = useNavigate();
   const progress = getProgress(topic.id);
-  const questions = getQuestionsByTopicId(topic.id);
+
 
   const levelColors = {
     Beginner: 'bg-green-100 text-green-700 border-green-200',
@@ -126,7 +126,7 @@ export const TopicContent = ({ topic }: TopicContentProps) => {
               <div>
                 <h3 className="text-lg font-bold text-gray-800">Ready to Test Your Knowledge?</h3>
                 <p className="text-sm text-gray-500">
-                  {questions.length} questions • ~5 minutes • Instant feedback
+                  10 questions • 10 minutes • Instant feedback
                 </p>
               </div>
             </div>

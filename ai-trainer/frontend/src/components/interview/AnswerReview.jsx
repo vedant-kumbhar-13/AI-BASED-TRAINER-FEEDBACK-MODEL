@@ -22,7 +22,7 @@ export default function AnswerReview({ questions = [], sessionId, onSubmit, onRe
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Load all answers from localStorage once on render
-  const answers = useMemo(() => loadAllAnswers(questions), [questions]);
+  const answers = useMemo(() => loadAllAnswers(questions), [questions, loadAllAnswers]);
 
   // Count valid answers (not the default placeholder)
   const validCount = answers.filter(

@@ -110,7 +110,7 @@ export default function InterviewResults({ results = {} }) {
     } catch { return []; }
   })();
 
-  const handlePDF = () => generateInterviewPDF(results);
+  const handlePDF = () => generateInterviewPDF();
 
   // ── Styles ──────────────────────────────────────────────────────────────
   const s = {
