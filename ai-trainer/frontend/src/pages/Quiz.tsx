@@ -1,35 +1,73 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Navigation } from '../components/dashboard/Navigation';
 import { QuestionCard, QuizProgress, QuizTimer } from '../components/quiz';
-import { getTopicById, getQuestionsByTopicId, saveProgress } from '../data/aptitudeData';
+import { getTopicById, getQuestionsByTopicId, saveProgress as saveProgressLocal } from '../data/aptitudeData';
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 const QUIZ_QUESTION_COUNT = 10;  // Questions per quiz attempt
 const QUIZ_TIME_SECONDS = 600;   // 10 minutes
+
+interface APIQuestion {
+  id: number;
+  topicId: number;
+  text: string;
+  options: string[];
+  correctAnswer?: string;  // Only populated after submit (from API) or from static data
+}
 
 export const Quiz = () => {
   const { topicId } = useParams();
   const navigate = useNavigate();
   
   const topic = topicId ? getTopicById(parseInt(topicId)) : null;
-  const allQuestions = topicId ? getQuestionsByTopicId(parseInt(topicId)) : [];
-  
-  // Randomly select QUIZ_QUESTION_COUNT questions (memoized so it stays stable)
-  const questions = useMemo(() => {
-    if (allQuestions.length <= QUIZ_QUESTION_COUNT) return allQuestions;
-    const shuffled = [...allQuestions].sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, QUIZ_QUESTION_COUNT);
-  }, [topicId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // BUG-03: Fetch randomized questions from the API, fallback to static data
+  const [questions, setQuestions] = useState<APIQuestion[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [usingAPI, setUsingAPI] = useState(false);
   
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTimerRunning, setIsTimerRunning] = useState(true);
 
+  useEffect(() => {
+    if (!topicId) { setIsLoading(false); return; }
+
+    const fetchQuestions = async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/aptitude/questions/?topic_id=${topicId}&count=${QUIZ_QUESTION_COUNT}`
+        );
+        if (!res.ok) throw new Error('API error');
+        const data = await res.json();
+        if (data.questions && data.questions.length > 0) {
+          setQuestions(data.questions);
+          setUsingAPI(true);
+          setIsLoading(false);
+          return;
+        }
+      } catch {
+        // API unavailable — fall through to static data
+      }
+
+      // Fallback: use static aptitudeData.ts
+      const allLocal = getQuestionsByTopicId(parseInt(topicId));
+      const shuffled = [...allLocal].sort(() => Math.random() - 0.5);
+      setQuestions(shuffled.slice(0, QUIZ_QUESTION_COUNT));
+      setUsingAPI(false);
+      setIsLoading(false);
+    };
+
+    fetchQuestions();
+  }, [topicId]);
+
   const currentQuestion = questions[currentQuestionIndex];
   const answeredCount = Object.keys(answers).length;
 
   const handleAnswerSelect = (answer: string) => {
+    if (!currentQuestion) return;
     setAnswers(prev => ({
       ...prev,
       [currentQuestion.id]: answer
@@ -48,24 +86,47 @@ export const Quiz = () => {
     }
   };
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (isSubmitting) return;
     setIsSubmitting(true);
     setIsTimerRunning(false);
 
-    // Calculate score
     let correctCount = 0;
-    questions.forEach(q => {
-      if (answers[q.id] === q.correctAnswer) {
-        correctCount++;
-      }
-    });
+    let score = 0;
 
-    const score = Math.round((correctCount / questions.length) * 100);
-    
-    // Save progress
+    if (usingAPI) {
+      // Submit to backend — it returns correct answers and score
+      try {
+        const res = await fetch(`${API_BASE}/aptitude/submit/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          score = data.score;
+          correctCount = data.correctCount;
+        } else {
+          throw new Error('Submit failed');
+        }
+      } catch {
+        // Fallback: can't determine correct answers from API questions
+        score = 0;
+        correctCount = 0;
+      }
+    } else {
+      // Local scoring with static data
+      questions.forEach(q => {
+        if (answers[q.id] === q.correctAnswer) {
+          correctCount++;
+        }
+      });
+      score = Math.round((correctCount / questions.length) * 100);
+    }
+
+    // Save progress locally
     if (topicId) {
-      saveProgress(parseInt(topicId), score);
+      saveProgressLocal(parseInt(topicId), score);
     }
 
     // Navigate to results with state
@@ -78,11 +139,26 @@ export const Quiz = () => {
         quizQuestionIds: questions.map(q => q.id)
       }
     });
-  }, [answers, questions, topicId, navigate, isSubmitting]);
+  }, [answers, questions, topicId, navigate, isSubmitting, usingAPI]);
 
   const handleTimeUp = useCallback(() => {
     handleSubmit();
   }, [handleSubmit]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Navigation />
+        <div className="pt-16 flex items-center justify-center h-[calc(100vh-4rem)]">
+          <div className="text-center">
+            <span className="text-5xl mb-4 block animate-pulse">📝</span>
+            <h2 className="text-xl font-bold text-gray-800 mb-2">Loading Quiz...</h2>
+            <p className="text-gray-500">Preparing random questions for you</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!topic || questions.length === 0) {
     return (

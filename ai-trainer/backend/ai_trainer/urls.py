@@ -22,7 +22,7 @@ urlpatterns = [
     path('api/learning/', include('apps.learning.urls')),
 
     # Future modules
-    # path('api/aptitude/', include('apps.aptitude.urls')),
+    path('api/aptitude/', include('apps.aptitude.urls')),
     # path('api/dashboard/', include('apps.dashboard.urls')),
 ]
 

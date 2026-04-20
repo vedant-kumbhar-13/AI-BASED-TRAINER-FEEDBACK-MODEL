@@ -99,6 +99,13 @@ export const InterviewSessionPage = () => {
   const [interimText,    setInterimText]    = useState('');
   const recognitionRef = useRef<any>(null);
 
+  // BUG-08: Silence detection — auto-advance after 3s of no speech
+  const silenceTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const SILENCE_TIMEOUT  = 3000; // 3 seconds
+
+  // BUG-09: localStorage key for session persistence
+  const STORAGE_KEY = 'interview_session_backup';
+
   const currentQuestion = questions[currentIdx] || null;
 
   // ── Timer ────────────────────────────────────────────────────────────────
@@ -107,6 +114,17 @@ export const InterviewSessionPage = () => {
     const id = setInterval(() => setTimer(t => t + 1), 1000);
     return () => clearInterval(id);
   }, [phase, currentIdx]);
+
+  // ── BUG-09: Persist session to localStorage whenever answers/index change ──
+  useEffect(() => {
+    if (phase === 'answering' && sessionId && questions.length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        sessionId, questions, currentIdx, collectedAnswers,
+      }));
+    }
+  }, [collectedAnswers, currentIdx, sessionId, questions, phase]);
+
+  const clearSessionBackup = () => localStorage.removeItem(STORAGE_KEY);
 
   // ── Mount: start interview + pre-load TTS voices ─────────────────────────
   useEffect(() => {
@@ -119,10 +137,28 @@ export const InterviewSessionPage = () => {
       };
     }
 
+    // BUG-09: Try restoring from localStorage before starting a fresh interview
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const backup = JSON.parse(saved);
+        if (backup.sessionId && backup.questions?.length > 0) {
+          setSessionId(backup.sessionId);
+          setQuestions(backup.questions);
+          setCurrentIdx(backup.currentIdx || 0);
+          setCollectedAnswers(backup.collectedAnswers || []);
+          setCurrentAnswer('');
+          setPhase('answering');
+          return; // skip startInterview()
+        }
+      } catch { /* corrupted — fall through to fresh start */ }
+    }
+
     startInterview();
     return () => {
       window.speechSynthesis?.cancel();
       recognitionRef.current?.stop();
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     };
   }, []);
 
@@ -174,6 +210,18 @@ export const InterviewSessionPage = () => {
         );
       }
       setInterimText(interimChunk);
+
+      // BUG-08: Reset silence timer on every speech result
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (finalChunk || interimChunk) {
+        silenceTimerRef.current = setTimeout(() => {
+          // 3s of silence after speech — auto-advance
+          intentionalStopRef.current = true;
+          recognitionRef.current?.stop();
+          // Use a small delay so the last final result is captured
+          setTimeout(() => handleNextQuestionRef.current(), 200);
+        }, SILENCE_TIMEOUT);
+      }
     };
 
     recognition.onerror = (event: any) => {
@@ -209,6 +257,11 @@ export const InterviewSessionPage = () => {
     recognitionRef.current?.stop();
     setIsListening(false);
     setInterimText('');
+    // BUG-08: Clear any pending silence timer
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
   }, []);
 
   // ── Auto-read question when it changes ───────────────────────────────────
@@ -328,6 +381,11 @@ export const InterviewSessionPage = () => {
     }
   };
 
+  // BUG-08: Stable ref for handleNextQuestion so the silence timer callback
+  // always calls the latest version without stale closure issues.
+  const handleNextQuestionRef = useRef(handleNextQuestion);
+  useEffect(() => { handleNextQuestionRef.current = handleNextQuestion; });
+
   const handleSkipQuestion = () => {
     setCurrentAnswer('[No answer provided]');
     handleNextQuestion();
@@ -353,6 +411,7 @@ export const InterviewSessionPage = () => {
         session_id: sessionId,
         answers:    collectedAnswers,
       });
+      clearSessionBackup(); // BUG-09: clear saved session on successful submit
       navigate('/ai-interview-feedback', { state: { evaluation, sessionId } });
     } catch (err: any) {
       setError(err.message || 'Submission failed. Please try again.');
@@ -363,7 +422,7 @@ export const InterviewSessionPage = () => {
   const handleExitInterview = () => {
     stopSpeaking();
     stopListening();
-    if (confirm('Are you sure you want to exit? Your progress will be lost.')) {
+    if (confirm('Are you sure you want to exit? Your progress will be saved and can be resumed.')) {
       navigate('/ai-interview');
     }
   };
