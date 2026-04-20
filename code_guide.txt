@@ -1,0 +1,31 @@
+AI TRAINER - EXECUTION GUIDE
+=============================
+
+Follow these steps to run the project from scratch.
+
+STEP 1: RUN THE BACKEND
+-----------------------
+1. Open a new terminal.
+2. Navigate to the backend directory:
+   cd ai-trainer/backend
+3. Activate the virtual environment:
+   venv\Scripts\activate
+4. Start the Django server:
+   python manage.py runserver
+
+The backend should now be running, typically at http://127.0.0.1:8000/
+
+
+STEP 2: RUN THE FRONTEND
+------------------------
+1. Open a SECOND terminal.
+2. Navigate to the frontend directory:
+   cd ai-trainer/frontend
+3. Start the development server:
+   npm run dev
+
+The frontend should now be running, typically at http://localhost:5173/
+
+-----------------------------
+Note: Ensure you have your environment variables (.env files) 
+configured in both backend and frontend folders before running.

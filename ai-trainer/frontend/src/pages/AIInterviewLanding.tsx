@@ -39,16 +39,11 @@ export const AIInterviewLanding = () => {
   const [selectedType, setSelectedType] = useState('Technical');
 
   const handleUploadResume = () => {
-    // Store the selected interview type so Interview.jsx can read it
-    localStorage.setItem('interview_type', selectedType);
     navigate('/ai-interview-upload', { state: { interviewType: selectedType } });
   };
 
   const handleQuickInterview = () => {
-    // Clear any stale resume_id so Interview.jsx uses the user's latest resume
-    localStorage.removeItem('resume_id');
-    localStorage.setItem('interview_type', selectedType);
-    navigate('/interview');
+    navigate('/ai-interview-summary', { state: { interviewType: selectedType, skipResume: true } });
   };
 
   return (

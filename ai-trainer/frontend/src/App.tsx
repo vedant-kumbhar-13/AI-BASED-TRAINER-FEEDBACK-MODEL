@@ -11,19 +11,11 @@ import { ResumeSummary } from './pages/ResumeSummary';
 import { InterviewSessionPage } from './pages/InterviewSession';
 import { InterviewFeedback } from './pages/InterviewFeedback';
 import { InterviewHistory } from './pages/InterviewHistory';
-import Interview from './pages/Interview';
 
 // Learning Pages
 import { Learning } from './pages/Learning';
 import { Quiz } from './pages/Quiz';
 import { QuizResults } from './pages/QuizResults';
-
-// Wrapper: reads resumeId and interviewType from localStorage so Interview receives them as props
-function InterviewWrapper() {
-  const resumeId = localStorage.getItem('resume_id') || '';
-  const interviewType = localStorage.getItem('interview_type') || 'Technical';
-  return <Interview resumeId={resumeId} interviewType={interviewType} />;
-}
 
 function App() {
   return (
@@ -32,18 +24,11 @@ function App() {
         {/* Auth Routes */}
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        
+
         {/* Protected Routes */}
         <Route path="/dashboard" element={
           <ProtectedRoute>
             <Dashboard />
-          </ProtectedRoute>
-        } />
-        
-        {/* New Interview Module Route */}
-        <Route path="/interview" element={
-          <ProtectedRoute>
-            <InterviewWrapper />
           </ProtectedRoute>
         } />
 
@@ -78,7 +63,7 @@ function App() {
             <InterviewHistory />
           </ProtectedRoute>
         } />
-        
+
         {/* Learning Module Routes */}
         <Route path="/learning" element={
           <ProtectedRoute>
@@ -100,8 +85,8 @@ function App() {
             <QuizResults />
           </ProtectedRoute>
         } />
-        
-        {/* Placeholder routes for future pages */}
+
+        {/* Placeholder routes */}
         <Route path="/tests" element={
           <ProtectedRoute>
             <Dashboard />
@@ -112,7 +97,7 @@ function App() {
             <Dashboard />
           </ProtectedRoute>
         } />
-        
+
         {/* Default redirect */}
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

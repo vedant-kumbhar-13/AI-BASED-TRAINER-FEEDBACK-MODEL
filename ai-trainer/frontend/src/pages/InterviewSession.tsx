@@ -108,8 +108,17 @@ export const InterviewSessionPage = () => {
     return () => clearInterval(id);
   }, [phase, currentIdx]);
 
-  // ── Mount: start interview ────────────────────────────────────────────────
+  // ── Mount: start interview + pre-load TTS voices ─────────────────────────
   useEffect(() => {
+    // Pre-load voices so they are available when the first question plays.
+    // Chrome populates getVoices() asynchronously; registering onvoiceschanged
+    // forces it to load immediately rather than returning [] on first call.
+    if (window.speechSynthesis && window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices(); // just trigger population
+      };
+    }
+
     startInterview();
     return () => {
       window.speechSynthesis?.cancel();
@@ -214,24 +223,40 @@ export const InterviewSessionPage = () => {
     if (!window.speechSynthesis) return;
     window.speechSynthesis.cancel();
     stopListening(); // Don't record the AI's own voice
-    
-    const utterance   = new SpeechSynthesisUtterance(text);
-    utterance.rate    = 0.9;
-    const voices      = window.speechSynthesis.getVoices();
-    const bestVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) ||
-                      voices.find(v => v.lang === 'en-IN') ||
-                      voices.find(v => v.lang.startsWith('en')) || voices[0];
-                      
-    if (bestVoice) utterance.voice = bestVoice;
-    
-    utterance.onstart  = () => setIsListening(false);
-    utterance.onend    = () => {
-      setIsSpeaking(false);
-      // Automatically start candidate's recording once question finished
-      startListening();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate  = 0.9;
+
+    // Pick the best available voice — read at call-time so voices are populated
+    const pickVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      return voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
+          || voices.find(v => v.lang === 'en-IN')
+          || voices.find(v => v.lang.startsWith('en'))
+          || voices[0]
+          || null;
     };
-    utterance.onerror  = () => setIsSpeaking(false);
-    
+
+    const bestVoice = pickVoice();
+    if (bestVoice) utterance.voice = bestVoice;
+
+    // Chrome bug fix: synthesis pauses mid-sentence on long text.
+    // Resume every 5 s only if Chrome already paused it on its own.
+    const keepAlive = setInterval(() => {
+      if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    }, 5000);
+
+    utterance.onstart = () => setIsListening(false);
+    utterance.onend   = () => {
+      clearInterval(keepAlive);
+      setIsSpeaking(false);
+      startListening(); // automatically start recording once question is read
+    };
+    utterance.onerror = () => {
+      clearInterval(keepAlive);
+      setIsSpeaking(false);
+    };
+
     setIsSpeaking(true);
     window.speechSynthesis.speak(utterance);
   };
