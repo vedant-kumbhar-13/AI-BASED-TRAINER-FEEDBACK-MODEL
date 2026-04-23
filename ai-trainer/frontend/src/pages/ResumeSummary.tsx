@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Navigation } from '../components/dashboard/Navigation';
-import { Play, ArrowLeft, FileText, Briefcase, GraduationCap, Code, Settings } from 'lucide-react';
+import { Play, ArrowLeft, FileText, Briefcase, GraduationCap, Code, Settings, AlertTriangle } from 'lucide-react';
 
 const DEFAULT_RESUME = {
   skills: ['JavaScript', 'React', 'Node.js', 'Python', 'SQL', 'Git'],
@@ -48,6 +48,35 @@ export const ResumeSummary = () => {
       
       <main className="pt-16">
         <div className="max-w-7xl mx-auto px-6 py-8">
+          {/* Parse Warning Banner: shown when resume data is empty */}
+          {!skipResume && !resume.skills?.length && !resume.experience?.length && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-800 text-sm mb-1">Resume Not Fully Parsed</p>
+                <p className="text-sm text-amber-700">
+                  We couldn't extract detailed information from your resume (AI parse issue). Your interview will still work,
+                  but questions may be more generic.
+                </p>
+                <div className="mt-2 flex gap-3">
+                  <button
+                    onClick={() => navigate('/ai-interview-upload', { state: { interviewType: initialType } })}
+                    className="text-sm font-bold text-amber-700 hover:underline"
+                  >
+                    ↑ Try uploading again
+                  </button>
+                  <span className="text-amber-400">·</span>
+                  <button
+                    onClick={() => navigate('/ai-interview-summary', { state: { interviewType: initialType, skipResume: true } })}
+                    className="text-sm font-bold text-amber-700 hover:underline"
+                  >
+                    Continue without resume
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Header */}
           <div className="flex items-center gap-4 mb-8">
             <button

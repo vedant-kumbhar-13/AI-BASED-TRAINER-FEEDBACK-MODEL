@@ -79,7 +79,13 @@ class InterviewAPI {
   /**
    * Upload and parse resume
    */
-  static async uploadResume(file: File): Promise<{ success: boolean; resume?: Resume; error?: string }> {
+  static async uploadResume(file: File): Promise<{
+    success: boolean;
+    resume?: Resume;
+    error?: string;
+    parsing_warning?: string;
+    parsing_error?: string;
+  }> {
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -91,13 +97,19 @@ class InterviewAPI {
       });
 
       const result = await response.json();
-      
+
       if (response.ok) {
-        return { success: true, resume: result };
+        return {
+          success: true,
+          resume: result,
+          // Surface backend warnings/errors so the UI can inform the user
+          parsing_warning: result.parsing_warning,
+          parsing_error: result.parsing_error,
+        };
       }
-      return { success: false, error: result.detail || 'Failed to upload resume' };
+      return { success: false, error: result.detail || result.error || 'Failed to upload resume' };
     } catch (error) {
-      return { success: false, error: 'Network error' };
+      return { success: false, error: 'Network error. Please check your connection and try again.' };
     }
   }
 

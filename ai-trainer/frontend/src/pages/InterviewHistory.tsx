@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Navigation } from '../components/dashboard/Navigation';
-import { Eye, Play, Trash2, Loader2 } from 'lucide-react';
+import { Eye, Play, Trash2, Loader2, Download } from 'lucide-react';
 import InterviewAPI from '../services/interviewAPI';
+import AuthService from '../services/authService';
 import type { InterviewSession } from '../services/interviewAPI';
 
 export const InterviewHistory = () => {
@@ -14,6 +15,7 @@ export const InterviewHistory = () => {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   useEffect(() => {
     loadHistory();
@@ -49,6 +51,30 @@ export const InterviewHistory = () => {
 
   const handleViewFeedback = (sessionId: string) => {
     navigate(`/ai-interview-feedback`, { state: { sessionId } });
+  };
+
+  const handleDownloadReport = async (sessionId: string) => {
+    if (downloadingId) return;
+    setDownloadingId(sessionId);
+    try {
+      const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
+      const headers = AuthService.getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/interview/report/${sessionId}/`, { headers });
+      if (!res.ok) throw new Error('Failed to generate PDF');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `AI_Interview_Report_${sessionId.substring(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError('Failed to download report. Please try again.');
+    } finally {
+      setDownloadingId(null);
+    }
   };
 
   const handleDelete = async (sessionId: string) => {
@@ -207,6 +233,18 @@ export const InterviewHistory = () => {
                             >
                               <Eye className="w-4 h-4" />
                             </button>
+                            {interview.status === 'completed' && (
+                              <button
+                                onClick={() => handleDownloadReport(interview.id)}
+                                disabled={downloadingId === interview.id}
+                                className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-green-600 disabled:opacity-50"
+                                title="Download PDF Report"
+                              >
+                                {downloadingId === interview.id
+                                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                                  : <Download className="w-4 h-4" />}
+                              </button>
+                            )}
                             <button
                               onClick={() => handleDelete(interview.id)}
                               className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-red-500"

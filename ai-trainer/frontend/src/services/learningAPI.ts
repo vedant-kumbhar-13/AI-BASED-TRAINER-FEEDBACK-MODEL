@@ -5,7 +5,7 @@
  * All data is served from cached DB — no external API calls on reads.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
 interface TopicSummary {
   id: number;

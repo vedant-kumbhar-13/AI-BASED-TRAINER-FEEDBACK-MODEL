@@ -97,10 +97,14 @@ export const InterviewSessionPage = () => {
   // Web Speech API (STT)
   const [isListening,    setIsListening]    = useState(false);
   const [interimText,    setInterimText]    = useState('');
+  const [silenceCountdown, setSilenceCountdown] = useState<number | null>(null);
   const recognitionRef = useRef<any>(null);
 
   // BUG-08: Silence detection — auto-advance after 3s of no speech
   const silenceTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  // BUG-B fix: track the 200ms advance delay so it can be cancelled by button click
+  const advanceTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const SILENCE_TIMEOUT  = 3000; // 3 seconds
 
   // BUG-09: localStorage key for session persistence
@@ -213,13 +217,32 @@ export const InterviewSessionPage = () => {
 
       // BUG-08: Reset silence timer on every speech result
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (countdownInterval.current) clearInterval(countdownInterval.current);
+      setSilenceCountdown(null);
+
       if (finalChunk || interimChunk) {
+        // Start countdown then auto-advance
         silenceTimerRef.current = setTimeout(() => {
-          // 3s of silence after speech — auto-advance
-          intentionalStopRef.current = true;
-          recognitionRef.current?.stop();
-          // Use a small delay so the last final result is captured
-          setTimeout(() => handleNextQuestionRef.current(), 200);
+          // Begin the 3-2-1 visible countdown
+          let remaining = 3;
+          setSilenceCountdown(remaining);
+          countdownInterval.current = setInterval(() => {
+            remaining -= 1;
+            if (remaining > 0) {
+              setSilenceCountdown(remaining);
+            } else {
+              clearInterval(countdownInterval.current!);
+              countdownInterval.current = null;
+              setSilenceCountdown(null);
+              // Now actually advance
+              intentionalStopRef.current = true;
+              recognitionRef.current?.stop();
+              advanceTimerRef.current = setTimeout(() => {
+                advanceTimerRef.current = null;
+                handleNextQuestionRef.current();
+              }, 200);
+            }
+          }, 1000);
         }, SILENCE_TIMEOUT);
       }
     };
@@ -257,10 +280,20 @@ export const InterviewSessionPage = () => {
     recognitionRef.current?.stop();
     setIsListening(false);
     setInterimText('');
+    setSilenceCountdown(null);
     // BUG-08: Clear any pending silence timer
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
+    }
+    if (countdownInterval.current) {
+      clearInterval(countdownInterval.current);
+      countdownInterval.current = null;
+    }
+    // BUG-B fix: also cancel the pending 200ms advance timer
+    if (advanceTimerRef.current) {
+      clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
     }
   }, []);
 
@@ -368,6 +401,11 @@ export const InterviewSessionPage = () => {
   };
 
   const handleNextQuestion = () => {
+    // BUG-B fix: if user clicks the button, cancel any pending silence-triggered advance
+    if (advanceTimerRef.current) {
+      clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
     stopSpeaking();
     stopListening();
     saveCurrentAnswer();
@@ -637,8 +675,8 @@ export const InterviewSessionPage = () => {
 
             {/* Answer section */}
             <div className="p-7">
-              {/* Mic controls */}
-              <div className="flex items-center gap-3 mb-3">
+              {/* Mic controls + listening indicator */}
+              <div className="flex items-center gap-3 mb-3 flex-wrap">
                 <span className="text-sm font-bold text-gray-700">Your Response</span>
 
                 {speechSupported ? (
@@ -647,9 +685,10 @@ export const InterviewSessionPage = () => {
                     title={isListening ? 'Stop recording' : 'Start voice input'}
                     className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold transition-all ${
                       isListening
-                        ? 'bg-red-500 text-white animate-pulse shadow-md'
+                        ? 'bg-red-500 text-white shadow-md'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}>
+                    }`}
+                  >
                     {isListening
                       ? <><MicOff className="w-4 h-4" /> Stop</>
                       : <><Mic className="w-4 h-4" /> Speak</>}
@@ -660,27 +699,54 @@ export const InterviewSessionPage = () => {
                   </span>
                 )}
 
+                {/* Waveform animation while listening */}
                 {isListening && (
-                  <span className="text-xs text-red-500 font-medium animate-pulse flex items-center gap-1">
-                    <span className="w-2 h-2 bg-red-500 rounded-full inline-block" />
-                    Listening…
+                  <span className="flex items-end gap-0.5 h-5">
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <span
+                        key={i}
+                        className="w-1 bg-red-500 rounded-full"
+                        style={{
+                          height: `${8 + (i % 3) * 6}px`,
+                          animation: `pulse 0.${6 + i}s ease-in-out infinite alternate`,
+                        }}
+                      />
+                    ))}
+                    <span className="ml-1 text-xs text-red-500 font-medium">Listening…</span>
+                  </span>
+                )}
+
+                {/* Silence countdown */}
+                {silenceCountdown !== null && (
+                  <span className="text-xs text-orange-500 font-medium animate-pulse">
+                    Auto-advancing in {silenceCountdown}s…
                   </span>
                 )}
               </div>
 
-              {/* Textarea + interim overlay */}
+              {/* ── Textarea — shows confirmed text + live interim ── */}
               <div className="relative">
                 <textarea
-                  value={currentAnswer}
-                  onChange={e => setCurrentAnswer(e.target.value)}
+                  value={isListening && interimText
+                    ? currentAnswer + (currentAnswer ? ' ' : '') + interimText
+                    : currentAnswer}
+                  onChange={e => {
+                    // If user types while NOT listening, accept edit normally
+                    if (!isListening) setCurrentAnswer(e.target.value);
+                  }}
+                  readOnly={isListening}
                   placeholder="Type your answer here, or click 'Speak' to use your microphone…"
                   rows={6}
-                  className="w-full p-4 border border-gray-300 rounded-xl resize-none focus:border-primary focus:ring-1 focus:ring-primary text-gray-800 placeholder-gray-400"
+                  className={`w-full p-4 border rounded-xl resize-none text-gray-800 placeholder-gray-400 transition-all ${
+                    isListening
+                      ? 'border-red-400 ring-2 ring-red-200 bg-red-50 focus:outline-none cursor-default'
+                      : 'border-gray-300 focus:border-primary focus:ring-1 focus:ring-primary'
+                  }`}
                 />
-                {/* Interim (partial) speech shown below textarea */}
-                {interimText && (
-                  <p className="mt-1 px-2 text-sm text-gray-400 italic">
-                    {interimText}…
+                {/* Interim text overlay hint */}
+                {isListening && interimText && (
+                  <p className="absolute bottom-3 right-3 text-xs text-red-400 italic pointer-events-none">
+                    hearing you…
                   </p>
                 )}
               </div>

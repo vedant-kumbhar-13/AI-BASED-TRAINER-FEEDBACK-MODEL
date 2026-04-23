@@ -74,7 +74,7 @@ export const InterviewFeedback = () => {
     fetchFeedback();
   }, [routeSessionId, evalData, sessionData]);
 
-  // ── Extract scores ── prefer new evaluation, fall back to session
+  // ── Extract scores — prefer evalData (new flow), fall back to session ──
   const scores = evalData?.scores || {};
   const communicationScore = evalData
     ? (scores.communication ?? 0)
@@ -86,9 +86,13 @@ export const InterviewFeedback = () => {
     ? (scores.confidence ?? 0)
     : sessionData?.confidence_score ?? 0;
 
-  // Overall = strict arithmetic average of the three displayed sub-scores
+  // ── Overall score: read directly from backend — NEVER recompute from sub-scores.
+  // History and dashboard both read session.overall_score from the DB.
+  // This keeps the feedback card consistent with those pages.
   const overallScore = Math.round(
-    (communicationScore + technicalScore + confidenceScore) / 3
+    evalData
+      ? (evalData.overall_score ?? scores.overall ?? 0)
+      : (sessionData?.overall_score ?? 0)
   );
 
   // ── Strengths / improvements ──

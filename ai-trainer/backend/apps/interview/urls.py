@@ -32,5 +32,8 @@ urlpatterns = [
 
     # Submit all answers at once — single Gemini holistic evaluation (BUG-04 fix)
     path('submit-all/', views.submit_all, name='submit-all'),
+
+    # PDF report download (lazy-generated, cached)
+    path('report/<uuid:session_id>/', views.download_report, name='download-report'),
 ]
 

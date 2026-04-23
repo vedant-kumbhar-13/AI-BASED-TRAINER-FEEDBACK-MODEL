@@ -10,8 +10,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
+from django.http import HttpResponse, FileResponse
 from django.utils import timezone
 from django.db import transaction
+from django.core.files.base import ContentFile
 import logging
 
 from .models import Resume, InterviewSession, InterviewQuestion, InterviewAnswer, InterviewFeedback, EvaluationResult
@@ -22,6 +24,7 @@ from .serializers import (
     InterviewFeedbackSerializer, SessionWithFeedbackSerializer, InterviewHistorySerializer
 )
 from .services import GeminiService, ResumeParser, FeedbackGenerator
+from .services.report_generator import generate_report_pdf
 from services.openai_service import generate_questions, evaluate_interview
 import json
 
@@ -69,44 +72,69 @@ class ResumeViewSet(viewsets.ModelViewSet):
         """Upload and parse a resume."""
         serializer = ResumeUploadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         # Create resume record
         resume = serializer.save(user=request.user)
-        
+
+        # Step 1: Extract raw text from PDF (mandatory — fail hard if PDF is unreadable)
         try:
-            # Parse the resume
             parser = ResumeParser()
             raw_text = parser.extract_text_from_pdf(resume.file)
-            
-            # Use Gemini for advanced parsing
-            gemini = GeminiService()
-            parsed_data = gemini.parse_resume_with_ai(raw_text)
-            
-            # Update resume with parsed data
             resume.raw_text = raw_text
-            resume.skills = parsed_data.get('skills', [])
-            resume.experience = parsed_data.get('experience', [])
-            resume.education = parsed_data.get('education', [])
-            resume.projects = parsed_data.get('projects', [])
-            resume.summary = parsed_data.get('summary', '')
-            resume.is_parsed = True
-            resume.save()
-            
-            return Response(
-                ResumeDetailSerializer(resume).data,
-                status=status.HTTP_201_CREATED
-            )
-            
         except Exception as e:
-            logger.error(f"Resume parsing error: {str(e)}")
-            # Return resume even if parsing fails — do NOT leak internal error
+            logger.error(f"PDF text extraction failed: {str(e)}")
+            resume.is_parsed = False
+            resume.save()
             return Response(
                 {
                     **ResumeDetailSerializer(resume).data,
-                    'parsing_error': 'Resume could not be fully parsed. You can still use it for interviews.'
+                    'parsing_error': 'Could not read the PDF file. Please make sure the file is not password-protected or corrupted.',
+                    'is_parsed': False,
                 },
                 status=status.HTTP_201_CREATED
             )
+
+        # Step 2: Try AI (Gemini) parsing — fall back to regex parser on failure
+        ai_parse_failed = False
+        try:
+            gemini = GeminiService()
+            parsed_data = gemini.parse_resume_with_ai(raw_text)
+            # Validate the AI returned non-empty data
+            if not parsed_data or not isinstance(parsed_data, dict):
+                raise ValueError("Gemini returned empty or invalid response")
+            if not parsed_data.get('skills') and not parsed_data.get('experience'):
+                raise ValueError("Gemini returned empty skills and experience")
+        except Exception as e:
+            logger.warning(f"Gemini resume parsing failed, falling back to regex parser: {str(e)}")
+            ai_parse_failed = True
+            parsed_data = {
+                'skills':     parser.parse_skills(raw_text),
+                'experience': parser.parse_experience(raw_text),
+                'education':  parser.parse_education(raw_text),
+                'projects':   parser.parse_projects(raw_text),
+                'summary':    '',
+            }
+
+        # Step 3: Persist parsed data
+        resume.skills     = parsed_data.get('skills', [])
+        resume.experience = parsed_data.get('experience', [])
+        resume.education  = parsed_data.get('education', [])
+        resume.projects   = parsed_data.get('projects', [])
+        resume.summary    = parsed_data.get('summary', '')
+        resume.is_parsed  = True
+        resume.save()
+
+        response_data = ResumeDetailSerializer(resume).data
+
+        if ai_parse_failed:
+            # Partial success — regex fallback used; skills may be incomplete
+            response_data['parsing_warning'] = (
+                'AI resume analysis encountered an issue. Your resume was uploaded successfully '
+                'and basic skills were extracted. For best results, the interview questions '
+                'may be slightly less personalised.'
+            )
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
@@ -490,34 +518,40 @@ def submit_all(request):
     with transaction.atomic():
         scores = evaluation.get('scores', {})
 
-        # Extract and normalize individual metric scores using module-level utility
-        hr_score     = normalize_score(scores.get('hr'))
-        tech_score   = normalize_score(scores.get('technical'))
-        comm_score   = normalize_score(scores.get('communication'))
-        conf_score   = normalize_score(scores.get('confidence'))
-        struct_score = normalize_score(scores.get('structure'))
+        # All sub-scores come directly from evaluate_interview() which computed
+        # them in Python from per-question rubric data — no re-calculation needed.
+        overall_score       = float(scores.get('overall',       evaluation.get('overall_score', 0)))
+        hr_score            = float(scores.get('hr',            0))
+        tech_score          = float(scores.get('technical',     0))
+        comm_score          = float(scores.get('communication', 0))
+        conf_score          = float(scores.get('confidence',    0))
+        struct_score        = float(scores.get('structure',     0))
 
-        # Calculate overall score as the strict arithmetic average of the
-        # three scores displayed on the UI: communication, technical, confidence.
-        # Always include zeros so the number is a transparent mathematical average.
-        calculated_overall = round(
-            (comm_score + tech_score + conf_score) / 3, 1
-        )
+        # Clamp to 0-100 (already done in evaluate_interview but be defensive)
+        def _clamp100(v: float) -> float:
+            return round(max(0.0, min(100.0, v)), 1)
+
+        overall_score  = _clamp100(overall_score)
+        hr_score       = _clamp100(hr_score)
+        tech_score     = _clamp100(tech_score)
+        comm_score     = _clamp100(comm_score)
+        conf_score     = _clamp100(conf_score)
+        struct_score   = _clamp100(struct_score)
 
         # Update session scores and mark completed
         session.status              = 'completed'
         session.end_time            = timezone.now()
-        session.overall_score       = calculated_overall
+        session.overall_score       = overall_score
         session.communication_score = comm_score
         session.technical_score     = tech_score
         session.confidence_score    = conf_score
         session.hr_avg_score        = hr_score
         session.save()
 
-        # Create EvaluationResult — reuse pre-normalized variables (no double scaling)
+        # Create EvaluationResult
         result = EvaluationResult.objects.create(
             session                 = session,
-            overall_score           = calculated_overall,
+            overall_score           = overall_score,
             hr_score                = hr_score,
             technical_score         = tech_score,
             communication_score     = comm_score,
@@ -539,13 +573,12 @@ def submit_all(request):
                 question = session.questions.get(question_number=q_index)
                 q_id_str = str(question.id)
 
-                # Match by questionId UUID first (most reliable, handles re-recorded answers)
+                # Match answer by questionId UUID first, then by position
                 matching_answer = next(
                     (a for a in answers
                      if str(a.get('questionId', a.get('question_id', ''))) == q_id_str),
                     None
                 )
-                # Fallback: match by position if UUID not found
                 if not matching_answer:
                     matching_answer = next(
                         (a for i, a in enumerate(answers, 1) if i == q_index),
@@ -556,32 +589,28 @@ def submit_all(request):
                     matching_answer.get('answerText', matching_answer.get('answer_text', ''))
                     if matching_answer else '[No answer provided]'
                 )
+
                 InterviewAnswer.objects.update_or_create(
                     question=question,
                     defaults={
                         'answer_text':  answer_text or '[No answer provided]',
-                        'score':        normalize_score(qr.get('score')),
+                        'score':        float(qr.get('score', 0)),
                         'ai_feedback':  qr.get('feedback', ''),
                         'strengths':    [qr.get('strength', '')] if qr.get('strength') else [],
                         'improvements': [qr.get('improvement', '')] if qr.get('improvement') else [],
+                        'relevance_score':  float(qr.get('relevance',     0)),
+                        'clarity_score':    float(qr.get('communication', 0)),
+                        'depth_score':      float(qr.get('depth',         0)),
                     }
                 )
             except InterviewQuestion.DoesNotExist:
                 continue
 
-    # Build a normalized response dict (all scores 0-100) for the frontend
-    normalized_question_results = []
-    for qr in evaluation.get('question_results', []):
-        normalized_question_results.append({
-            **qr,
-            'score': normalize_score(qr.get('score')),
-        })
-
     return Response(
         {
             'evaluation_id':       str(result.id),
             'session_id':          str(session.id),
-            'overall_score':       calculated_overall,
+            'overall_score':       overall_score,
             'placement_readiness': evaluation.get('placement_readiness', 'needs_work'),
             'summary':             evaluation.get('summary', ''),
             'top_strength':        evaluation.get('top_strength', ''),
@@ -594,7 +623,71 @@ def submit_all(request):
                 'confidence':    conf_score,
                 'structure':     struct_score,
             },
-            'question_results':    normalized_question_results,
+            'question_results': evaluation.get('question_results', []),
         },
         status=status.HTTP_200_OK
     )
+
+
+# ===========================================================================
+# PDF Report Download
+# ===========================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def download_report(request, session_id):
+    """
+    GET /api/interview/report/<session_id>/
+
+    Returns a PDF report for the given completed interview session.
+    The PDF is generated on first access and cached in EvaluationResult.report_pdf.
+    Subsequent requests stream the cached file directly.
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    if session.status != 'completed':
+        return Response(
+            {'error': 'Report is only available for completed interviews.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        evaluation = session.evaluation  # EvaluationResult (OneToOne)
+    except Exception:
+        return Response(
+            {'error': 'Evaluation data not found. Please complete the interview first.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    filename = f"AI_Interview_Report_{str(session.id)[:8]}.pdf"
+
+    # ── Return cached PDF if already generated ──────────────────────────────
+    if evaluation.report_pdf and evaluation.report_pdf.name:
+        try:
+            pdf_bytes = evaluation.report_pdf.read()
+            response = HttpResponse(pdf_bytes, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+        except Exception:
+            pass  # Cache read failed — generate fresh
+
+    # ── Generate PDF ────────────────────────────────────────────────────────
+    try:
+        pdf_bytes = generate_report_pdf(session)
+    except Exception as e:
+        logger.error(f"PDF generation failed for session {session_id}: {e}")
+        return Response(
+            {'error': 'PDF generation failed. Please try again.'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    # ── Cache in the database ────────────────────────────────────────────────
+    try:
+        evaluation.report_pdf.save(filename, ContentFile(pdf_bytes), save=True)
+    except Exception as e:
+        logger.warning(f"Could not cache PDF for session {session_id}: {e}")
+        # Still return the PDF even if caching fails
+
+    response = HttpResponse(pdf_bytes, content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response

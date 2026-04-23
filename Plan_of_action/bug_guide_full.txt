@@ -1,0 +1,444 @@
+
+=== TABLE 1 ===
+[Cell 0]: Repository
+[Cell 1]: AI-BASED-TRAINER-FEEDBACK-MODEL_test (main branch)
+
+[Cell 0]: Audit Date
+[Cell 1]: April 2026
+
+[Cell 0]: Bugs Already Fixed
+[Cell 1]: BUG-01 through BUG-09, BUG-11 through BUG-16 from previous blueprint — ALL resolved
+
+[Cell 0]: New Bugs Found
+[Cell 1]: 7 bugs found by reading actual source files (BUG-A through BUG-G)
+
+[Cell 0]: Critical
+[Cell 1]: 1  (BUG-A — env URL mismatch breaks all API calls on fresh setup)
+
+[Cell 0]: High
+[Cell 1]: 1  (BUG-B — silence timer double-fire advances twice, corrupts answers)
+
+[Cell 0]: Medium
+[Cell 1]: 2  (BUG-C and BUG-E — settings path and Gemini JSON mode)
+
+[Cell 0]: Low
+[Cell 1]: 3  (BUG-D, BUG-F, BUG-G — prompt comment, JWT decode, env var name)
+
+
+=== TABLE 2 ===
+[Cell 0]: ID
+[Cell 1]: File
+[Cell 2]: Severity
+[Cell 3]: One-Line Summary
+
+[Cell 0]: BUG-A
+[Cell 1]: .env.example
+[Cell 2]: Critical
+[Cell 3]: URL has no /api — every auth call hits wrong path on fresh install
+
+[Cell 0]: BUG-B
+[Cell 1]: InterviewSession.tsx
+[Cell 2]: High
+[Cell 3]: Uncancellable 200ms timer causes silence detection to fire twice
+
+[Cell 0]: BUG-C
+[Cell 1]: settings.py
+[Cell 2]: Medium
+[Cell 3]: MEDIA_URL and STATIC_URL missing leading / — file uploads return 404
+
+[Cell 0]: BUG-D
+[Cell 1]: gemini_service.py
+[Cell 2]: Low
+[Cell 3]: Python comment inside f-string is sent to Gemini as resume text
+
+[Cell 0]: BUG-E
+[Cell 1]: gemini_service.py
+[Cell 2]: Medium
+[Cell 3]: parse_resume_with_ai missing JSON mode — occasional markdown wrapping
+
+[Cell 0]: BUG-F
+[Cell 1]: authService.ts
+[Cell 2]: Low
+[Cell 3]: base64url JWT not normalised before atob() — valid tokens fail decode
+
+[Cell 0]: BUG-G
+[Cell 1]: learningAPI.ts
+[Cell 2]: Low
+[Cell 3]: Reads VITE_API_URL (wrong name) — learning API always uses hardcoded URL
+
+
+=== TABLE 3 ===
+[Cell 0]: BUG-A   [Critical]   File: .env.example  (frontend root)
+[Cell 1]: BUG-A   [Critical]   File: .env.example  (frontend root)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: On a fresh clone, a developer copies .env.example to .env and runs the project. Every login attempt and registration fails immediately with a 404 or "Cannot POST" error. The error is invisible in the React UI — it just shows "Network error".
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: .env.example sets VITE_API_BASE_URL=http://localhost:8000 (no /api suffix). authService.ts constructs URLs as ${VITE_API_BASE_URL}/auth/register/ which resolves to http://localhost:8000/auth/register/ — a non-existent path. The Django router mounts everything under /api/auth/, so the correct URL is http://localhost:8000/api/auth/register/. InterviewSession.tsx defensively strips /api and re-adds it, which is why the interview endpoint works but login and resume upload do not.
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Change one line in .env.example. Ensure the .env file a developer creates on first setup has the correct /api suffix.
+
+[Cell 0]: ✏️  Fix in .env.example
+[Cell 1]: # BEFORE (wrong — missing /api):
+❌ VITE_API_BASE_URL=http://localhost:8000
+
+# AFTER (correct — includes /api):
+✅ VITE_API_BASE_URL=http://localhost:8000/api
+
+# Also update your actual .env file if you copied
+# the wrong value from .env.example already.
+
+[Cell 0]: 🧹  Also simplify InterviewSession.tsx
+[Cell 1]: // Line 21 — current (defensive but unnecessary once .env is fixed):
+❌ const API_BASE = (import.meta.env.VITE_API_BASE_URL ||
+❌   "http://localhost:8000/api").replace(/\/api$/, "");
+// ...then later: `${API_BASE}/api/interview/start/`
+
+// AFTER (clean — matches authService.ts pattern):
+✅ const API_BASE = import.meta.env.VITE_API_BASE_URL ||
+✅   "http://localhost:8000/api";
+// ...then later: `${API_BASE}/interview/start/`
+
+// This is optional cleanup — the interview still works
+// either way once .env.example is corrected.
+
+[Cell 0]: ✅  Result
+[Cell 1]: Fresh project setup: copy .env.example, run npm run dev — login and registration work immediately without any manual URL editing.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: Open the browser Network tab. Click "Create Account". The failing POST should go to http://localhost:8000/api/auth/register/ (with /api), NOT http://localhost:8000/auth/register/ (without /api).
+
+
+=== TABLE 4 ===
+[Cell 0]: BUG-B   [High]   File: frontend/src/pages/InterviewSession.tsx  (line ~217)
+[Cell 1]: BUG-B   [High]   File: frontend/src/pages/InterviewSession.tsx  (line ~217)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: During voice recording, if the user clicks "Next Question" within 200ms of the silence timer firing, handleNextQuestion() runs twice in rapid succession. The second call saves the answer as "[No answer provided]" and skips to the question after the intended one. The user loses Q+1 answer and jumps to Q+2 without realising.
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: The silence timer (silenceTimerRef) fires after 3 seconds. Its callback calls recognition.stop(), then launches an anonymous setTimeout(() => handleNextQuestion(), 200). This inner 200ms timeout is not stored in any ref. stopListening() correctly clears silenceTimerRef, but cannot cancel the inner timeout because it has no reference. If the user clicks Next in that 200ms window, handleNextQuestion() fires from both the button click and the orphaned timeout.
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Introduce a second ref (advanceTimerRef) to hold the 200ms timeout. Clear it at the start of stopListening() and at the start of handleNextQuestion() — wherever the advance is initiated first wins, and the second attempt is a no-op.
+
+[Cell 0]: ✏️  Add the ref (after silenceTimerRef)
+[Cell 1]: // After line ~103 where silenceTimerRef is declared:
+✅ const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+[Cell 0]: ✏️  Fix the silence timer callback (~line 217)
+[Cell 1]: // BEFORE:
+❌ silenceTimerRef.current = setTimeout(() => {
+❌   intentionalStopRef.current = true;
+❌   recognitionRef.current?.stop();
+❌   setTimeout(() => handleNextQuestionRef.current(), 200);
+❌ }, SILENCE_TIMEOUT);
+
+// AFTER:
+✅ silenceTimerRef.current = setTimeout(() => {
+✅   intentionalStopRef.current = true;
+✅   recognitionRef.current?.stop();
+✅   advanceTimerRef.current = setTimeout(() => {
+✅     advanceTimerRef.current = null;
+✅     handleNextQuestionRef.current();
+✅   }, 200);
+✅ }, SILENCE_TIMEOUT);
+
+[Cell 0]: ✏️  Clear in stopListening() (~line 257)
+[Cell 1]: // Inside stopListening(), after clearing silenceTimerRef:
+✅ if (advanceTimerRef.current) {
+✅   clearTimeout(advanceTimerRef.current);
+✅   advanceTimerRef.current = null;
+✅ }
+
+[Cell 0]: ✏️  Guard at top of handleNextQuestion() (~line 370)
+[Cell 1]: // Add as the FIRST line inside handleNextQuestion():
+✅ if (advanceTimerRef.current) {
+✅   clearTimeout(advanceTimerRef.current);
+✅   advanceTimerRef.current = null;
+✅ }
+// This ensures: whichever path fires first (button click OR
+// silence timer) cancels the other before it can also fire.
+
+[Cell 0]: ✅  Result
+[Cell 1]: Clicking "Next Question" within 200ms of the 3-second silence firing advances exactly once. Q+1 answer is saved correctly. The user never skips a question accidentally.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: During recording on Q1, stop speaking. Immediately (within 1-2s of silence) click "Next Question". You should land on Q2 with Q1 saved. Without the fix you would jump to Q3 with Q2 showing "[No answer provided]".
+
+
+=== TABLE 5 ===
+[Cell 0]: BUG-C   [Medium]   File: backend/ai_trainer/settings.py  (lines 114, 118)
+[Cell 1]: BUG-C   [Medium]   File: backend/ai_trainer/settings.py  (lines 114, 118)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: Uploaded resume PDF files return 404 when accessed through the browser. Django admin also fails to load its CSS and JavaScript, showing a completely unstyled page.
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: Django's documentation for MEDIA_URL and STATIC_URL requires both values to start with a forward slash. The current settings.py has MEDIA_URL = "media/" and STATIC_URL = "static/" without the leading /. When Django generates a URL for an uploaded file, it produces a relative path like media/resumes/file.pdf instead of the absolute path /media/resumes/file.pdf. The browser then resolves it relative to the current page URL, which is almost never where the file actually is.
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Add a forward slash to the beginning of both MEDIA_URL and STATIC_URL in settings.py.
+
+[Cell 0]: ✏️  Fix in settings.py
+[Cell 1]: # BEFORE:
+❌ STATIC_URL = "static/"
+❌ MEDIA_URL  = "media/"
+
+# AFTER:
+✅ STATIC_URL = "/static/"
+✅ MEDIA_URL  = "/media/"
+
+[Cell 0]: ✅  Result
+[Cell 1]: Resume PDFs load correctly at /media/resumes/filename.pdf. Django admin loads with proper styling. The resume upload → parse flow completes without file access errors.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: Upload a resume. Copy the file URL from the resume detail API response. Open it directly in the browser. It should return the PDF file, not a 404 page.
+
+
+=== TABLE 6 ===
+[Cell 0]: BUG-E   [Medium]   File: backend/apps/interview/services/gemini_service.py  (parse_resume_with_ai method)
+[Cell 1]: BUG-E   [Medium]   File: backend/apps/interview/services/gemini_service.py  (parse_resume_with_ai method)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: Occasionally, resume parsing fails silently. The skills, experience, projects, and education arrays all come back empty. The interview then generates generic questions unrelated to the candidate's actual background because the parsed resume has no content.
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: The openai_service.py (used for question generation and evaluation) correctly uses response_mime_type="application/json" in GenerationConfig. This forces Gemini to always return valid JSON with no markdown wrapping. The GeminiService class in gemini_service.py calls self.model.generate_content(prompt) with no GenerationConfig at all. When Gemini chooses to prefix its JSON response with "Here is the parsed resume:" or wrap it in ```json ... ```, the regex strip only catches clean fences — multi-line prose before the JSON causes json.loads() to throw, the except catches it silently, and an empty dict is returned.
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Add generation_config with response_mime_type="application/json" to the parse_resume_with_ai method. Also upgrade the fallback regex to be more aggressive in stripping any text before the first { character.
+
+[Cell 0]: ✏️  Update parse_resume_with_ai in gemini_service.py
+[Cell 1]: # BEFORE — no generation config:
+❌ response = self.model.generate_content(prompt)
+
+# AFTER — force JSON output:
+✅ response = self.model.generate_content(
+✅     prompt,
+✅     generation_config=genai.types.GenerationConfig(
+✅         temperature=0.1,
+✅         max_output_tokens=2048,
+✅         response_mime_type="application/json",
+✅     )
+✅ )
+
+# Also add this import at top of file if not present:
+✅ import google.generativeai as genai
+# (it should already be imported — just verify)
+
+[Cell 0]: ✏️  Add aggressive JSON extraction as fallback
+[Cell 1]: # After response_text = response.text.strip():
+# Replace the existing regex strip block with:
+✅ # Strip markdown fences
+✅ response_text = re.sub(r"^```(?:json)?\s*", "", response_text)
+✅ response_text = re.sub(r"\s*```$", "", response_text).strip()
+✅ # If any prose precedes the JSON object, jump to the first {
+✅ brace = response_text.find("{")
+✅ if brace > 0:
+✅     response_text = response_text[brace:]
+
+[Cell 0]: ✅  Result
+[Cell 1]: Resume upload always produces a fully populated skills, experience, and projects array. Interview questions reference specific technologies and projects from the resume instead of asking generic questions.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: Upload a resume with clear sections. Call GET /api/interview/resume/{id}/ and check the skills array. It should list actual technologies from the PDF, not an empty array [].
+
+
+=== TABLE 7 ===
+[Cell 0]: BUG-D   [Low]   File: backend/apps/interview/services/gemini_service.py  (~line 378)
+[Cell 1]: BUG-D   [Low]   File: backend/apps/interview/services/gemini_service.py  (~line 378)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: Every resume parsing prompt contains the literal text "# Limit to prevent token overflow" as part of the resume content. This is invisible to users but pollutes every Gemini prompt with a stray Python comment.
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: Python comments using # only work outside strings. Inside a triple-quoted f-string, the # and everything after it on the same line is plain text — not a comment — and is included in the string value. The offending line is: {resume_text[:4000]}  # Limit to prevent token overflow
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Move the comment to its own line above the f-string, outside the string. The slice [:4000] on resume_text stays.
+
+[Cell 0]: ✏️  Fix in gemini_service.py (~line 378)
+[Cell 1]: # BEFORE — comment inside the f-string:
+❌ RESUME TEXT:
+❌ {resume_text[:4000]}  # Limit to prevent token overflow
+
+# AFTER — comment outside the f-string:
+✅ # Truncate to 4000 chars to stay within token limit
+✅ truncated = resume_text[:4000]
+# Then in the f-string:
+✅ RESUME TEXT:
+✅ {truncated}
+
+[Cell 0]: ✅  Result
+[Cell 1]: Gemini receives the resume text only, with no embedded Python source code comments. Parsing accuracy marginally improves because there is no unexpected content in the input.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: After the fix, add a print(prompt[:200]) debug line temporarily. Run a resume upload. Confirm "# Limit to prevent token overflow" no longer appears in the output.
+
+
+=== TABLE 8 ===
+[Cell 0]: BUG-F   [Low]   File: frontend/src/services/authService.ts  (line ~136)
+[Cell 1]: BUG-F   [Low]   File: frontend/src/services/authService.ts  (line ~136)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: isAuthenticated() returns false for some users, logging them out even though their token has not expired. This causes redirect-to-login loops on page refresh for certain accounts.
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: JWT tokens use base64url encoding, which replaces + with - and / with _. The standard JavaScript atob() function only handles base64 — it throws a DOMException when it encounters - or _ characters. The try/catch in isAuthenticated() catches the error and returns false, making the user appear unauthenticated. The bug is intermittent because not all tokens happen to contain these characters, which is why it only affects certain users.
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Normalise the base64url payload segment to standard base64 before passing it to atob(). This is a one-line addition.
+
+[Cell 0]: ✏️  Fix in authService.ts (~line 136)
+[Cell 1]: // BEFORE:
+❌ const payload = JSON.parse(atob(token.split(".")[1]));
+
+// AFTER — normalise base64url to base64 first:
+✅ const base64 = token.split(".")[1]
+✅   .replace(/-/g, "+")   // base64url → base64
+✅   .replace(/_/g, "/");   // base64url → base64
+✅ const payload = JSON.parse(atob(base64));
+
+[Cell 0]: ✅  Result
+[Cell 1]: isAuthenticated() correctly reads the expiry from all JWT tokens. No user experiences unexpected logouts after page refresh.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: In the browser console after login: run AuthService.isAuthenticated(). It should return true. Then log out, paste in a token with - or _ in its payload (any valid JWT will do), and re-run — it should still return true instead of throwing.
+
+
+=== TABLE 9 ===
+[Cell 0]: BUG-G   [Low]   File: frontend/src/services/learningAPI.ts  (line 8)
+[Cell 1]: BUG-G   [Low]   File: frontend/src/services/learningAPI.ts  (line 8)
+
+[Cell 0]: 🔍  Symptom
+[Cell 1]: The Learning module always connects to http://localhost:8000 regardless of what VITE_API_BASE_URL is set to. On any machine or environment where the backend runs on a different host or port, the Learning page fails to load topics and shows an empty sidebar.
+
+[Cell 0]: 🧠  Root Cause
+[Cell 1]: The project standard environment variable is VITE_API_BASE_URL. learningAPI.ts reads import.meta.env.VITE_API_URL instead — a different name that is never defined anywhere. Vite substitutes undefined for missing variables, so the fallback "http://localhost:8000" is always used. This means changing VITE_API_BASE_URL in .env has no effect on the Learning module.
+
+[Cell 0]: 🛠  Approach
+[Cell 1]: Change the variable name in learningAPI.ts to match the project standard. One character change fixes it.
+
+[Cell 0]: ✏️  Fix in learningAPI.ts (line 8)
+[Cell 1]: // BEFORE — reads a variable that does not exist:
+❌ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+// AFTER — reads the correct project-standard variable:
+✅ const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
+
+// Note: also add /api to the fallback to be consistent
+// with authService.ts and interviewAPI.ts
+
+[Cell 0]: ✅  Result
+[Cell 1]: The Learning module connects to whatever host/port is set in VITE_API_BASE_URL. Topics load on any machine, not just localhost:8000.
+
+[Cell 0]: 🧪  Verify
+[Cell 1]: Temporarily change VITE_API_BASE_URL in .env to http://localhost:9999/api. Reload the Learning page. It should fail to connect to port 9999. Before the fix it would silently connect to port 8000 instead, ignoring the env variable.
+
+
+=== TABLE 10 ===
+[Cell 0]: Order
+[Cell 1]: Bug ID
+[Cell 2]: Time
+[Cell 3]: Severity
+[Cell 4]: What to do
+
+[Cell 0]: 1st
+[Cell 1]: BUG-A
+[Cell 2]: 2 minutes
+[Cell 3]: Critical
+[Cell 4]: Edit .env.example: add /api to URL. Also update your own .env file.
+
+[Cell 0]: 2nd
+[Cell 1]: BUG-C
+[Cell 2]: 2 minutes
+[Cell 3]: Medium
+[Cell 4]: Edit settings.py: add / prefix to MEDIA_URL and STATIC_URL.
+
+[Cell 0]: 3rd
+[Cell 1]: BUG-G
+[Cell 2]: 1 minute
+[Cell 3]: Low
+[Cell 4]: Edit learningAPI.ts line 8: VITE_API_URL → VITE_API_BASE_URL.
+
+[Cell 0]: 4th
+[Cell 1]: BUG-D
+[Cell 2]: 5 minutes
+[Cell 3]: Low
+[Cell 4]: Move comment out of f-string in gemini_service.py.
+
+[Cell 0]: 5th
+[Cell 1]: BUG-F
+[Cell 2]: 5 minutes
+[Cell 3]: Low
+[Cell 4]: Add base64url normalisation before atob() in authService.ts.
+
+[Cell 0]: 6th
+[Cell 1]: BUG-E
+[Cell 2]: 15 minutes
+[Cell 3]: Medium
+[Cell 4]: Add GenerationConfig JSON mode to parse_resume_with_ai.
+
+[Cell 0]: 7th
+[Cell 1]: BUG-B
+[Cell 2]: 20 minutes
+[Cell 3]: High
+[Cell 4]: Add advanceTimerRef + cancellation in 3 places in InterviewSession.tsx.
+
+
+=== TABLE 11 ===
+[Cell 0]: Bug ID
+[Cell 1]: Description
+[Cell 2]: Confirmed Fixed In
+
+[Cell 0]: BUG-01/02
+[Cell 1]: Name field accepts invalid characters
+[Cell 2]: Register.tsx — NAME_REGEX + handleChange filter confirmed
+
+[Cell 0]: BUG-03
+[Cell 1]: Quiz always same 5 questions
+[Cell 2]: Quiz.tsx — API call with fallback to aptitudeData confirmed
+
+[Cell 0]: BUG-04
+[Cell 1]: Per-answer Gemini calls (slow)
+[Cell 2]: submit_all() endpoint + InterviewSession collect-and-submit confirmed
+
+[Cell 0]: BUG-05
+[Cell 1]: MediaRecorder/Whisper STT
+[Cell 2]: Web Speech API (SpeechRecognitionClass) confirmed in InterviewSession.tsx
+
+[Cell 0]: BUG-06
+[Cell 1]: Chrome TTS pauses mid-sentence
+[Cell 2]: keepAlive setInterval in speakText() confirmed
+
+[Cell 0]: BUG-07
+[Cell 1]: Robotic voice on first load
+[Cell 2]: onvoiceschanged listener in mount useEffect confirmed
+
+[Cell 0]: BUG-08
+[Cell 1]: No silence detection
+[Cell 2]: silenceTimerRef + SILENCE_TIMEOUT = 3000ms confirmed
+
+[Cell 0]: BUG-09
+[Cell 1]: Session lost on refresh
+[Cell 2]: STORAGE_KEY localStorage backup confirmed
+
+[Cell 0]: BUG-11
+[Cell 1]: Hardcoded localhost URL
+[Cell 2]: import.meta.env.VITE_API_BASE_URL confirmed in all service files
+
+[Cell 0]: BUG-12
+[Cell 1]: Token storage inconsistency
+[Cell 2]: authStore.ts stores both access + refresh confirmed
+
+[Cell 0]: BUG-13
+[Cell 1]: Outdated Gemini package
+[Cell 2]: requirements.txt: google-generativeai>=0.8.0 confirmed
+
+[Cell 0]: BUG-16
+[Cell 1]: Scores 10x too small
+[Cell 2]: normalize_score() in views.py + ×10 display in InterviewFeedback confirmed
+

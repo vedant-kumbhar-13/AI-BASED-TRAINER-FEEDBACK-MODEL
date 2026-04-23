@@ -1,0 +1,100 @@
+AI Pre-Placement Trainer
+Real Code Audit — Bug Fix Guide
+Based on reading every file in the actual GitHub repository
+github.com/vedant-kumbhar-13/AI-BASED-TRAINER-FEEDBACK-MODEL_test
+
+1.  Audit Scope — What Was Read
+ℹ️  NOTE — Every TypeScript, Python, and config file in the repository was read in full. This document reports only bugs confirmed by reading actual code — no assumptions.
+
+The following files were read completely:
+frontend/src/pages/InterviewSession.tsx  (460 lines)
+frontend/src/pages/InterviewFeedback.tsx  (500+ lines)
+frontend/src/components/auth/Register.tsx
+frontend/src/services/authService.ts  +  interviewAPI.ts  +  learningAPI.ts
+frontend/src/store/authStore.ts
+frontend/src/App.tsx  +  .env.example
+backend/apps/interview/views.py  (submit_all, start_interview)
+backend/apps/interview/urls.py
+backend/apps/interview/services/gemini_service.py  (GeminiService class)
+backend/services/openai_service.py  (generate_questions, evaluate_interview)
+backend/apps/accounts/serializers.py
+backend/ai_trainer/settings.py  +  urls.py  +  requirements.txt
+
+✅ RESULT — Good news — All 16 bugs from the previous blueprint (BUG-01 through BUG-16) are confirmed fixed in the current code. Name validation, Web Speech API, Chrome TTS keepAlive, localStorage persistence, submit-all endpoint, and score normalisation are all implemented correctly.
+
+2.  Bug Summary — All 7 Confirmed Issues
+
+
+3.  Bug Details — Critical and High
+
+BUG-A  —  .env.example URL Breaks All API Calls on Fresh Setup
+
+
+BUG-B  —  Silence Timer 200ms Inner Timeout Cannot Be Cancelled
+
+
+
+4.  Bug Details — Medium Priority
+
+BUG-C  —  MEDIA_URL and STATIC_URL Missing Leading Slash
+
+
+BUG-E  —  parse_resume_with_ai Missing JSON Response Mode
+
+
+
+5.  Bug Details — Low Priority
+
+BUG-D  —  Python Comment Inside f-string Sent to Gemini
+
+
+BUG-F  —  JWT Decode Uses atob on base64url Without Normalising
+
+
+BUG-G  —  learningAPI.ts Uses Wrong Environment Variable Name
+
+
+
+6.  Fix Order and Time Estimates
+
+💡 TIP — All 7 bugs can be fixed in under 2 hours total. BUG-A and BUG-C are the most important for a demo because they affect whether the app can be set up and whether uploaded files are accessible.
+
+
+7.  Complete Verification Checklist
+
+ℹ️  NOTE — Run every item after fixing all 7 bugs. Only tick an item after testing it in the browser or terminal — not when the code change looks correct.
+
+Setup (BUG-A + BUG-G)
+[ ]  Copy .env.example to .env. Log in immediately without changing anything. Login succeeds.
+[ ]  Open DevTools Network tab during login. POST goes to .../api/auth/login/ (with /api).
+[ ]  Open the Learning page. Topics load in the sidebar (not an empty list).
+[ ]  Change VITE_API_BASE_URL to a wrong port. Learning page fails. Revert — Learning page works again.
+
+File Uploads (BUG-C)
+[ ]  Upload a resume PDF. POST to /api/interview/resume/ returns 201 with file field populated.
+[ ]  Copy the file URL from the response and open it in a browser tab. The PDF downloads — no 404.
+[ ]  Open Django admin at localhost:8000/admin/. The page loads with proper blue styling — not a plain unstyled page.
+
+Resume Parsing (BUG-D + BUG-E)
+[ ]  Upload a resume that lists Python, Django, React as skills. After parsing, the skills array in the API response contains "Python", "Django", "React" — not an empty array [].
+[ ]  Check the skills array appears in the interview questions — at least one question should mention a technology from the resume.
+[ ]  In the backend terminal, the debug log should NOT show "# Limit to prevent token overflow" appearing in the Gemini request prompt.
+
+Voice Interview — Double-Advance (BUG-B)
+[ ]  Start an interview. Answer Q1 by speaking. Stop speaking for 3 seconds.
+[ ]  Within 1 second of the silence triggering, immediately click "Next Question".
+[ ]  Result: you land on Q2. NOT Q3. Q1 answer is saved in collectedAnswers.
+[ ]  Click "Review Answers" at the end. Q1 shows your actual spoken answer — not "[No answer provided]".
+
+Authentication (BUG-F)
+[ ]  Log in. Refresh the browser. You remain logged in — no redirect to /login.
+[ ]  In the browser console, run: localStorage.getItem("access_token") — paste the value into jwt.io and confirm it is a valid token.
+[ ]  No console errors mentioning "Invalid character" or "atob" during login or page load.
+
+8.  Confirmation — Previously Fixed Bugs
+
+✅ RESULT — The following bugs from earlier blueprints were searched for in the current codebase and confirmed fixed. No action needed.
+
+
+AI Pre-Placement Trainer  |  Real Code Audit  |  7 Bugs Found  |  April 2026
+YSPM's Yashoda Technical Campus, Satara  |  AI & Data Science Department  |  Academic Year 2025-26

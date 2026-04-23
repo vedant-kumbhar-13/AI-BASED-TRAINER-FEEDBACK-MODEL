@@ -133,7 +133,10 @@ class AuthService {
     
     // Basic JWT expiry check
     try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
+      const base64 = token.split('.')[1]
+        .replace(/-/g, '+')   // base64url → base64
+        .replace(/_/g, '/');  // base64url → base64
+      const payload = JSON.parse(atob(base64));
       return payload.exp * 1000 > Date.now();
     } catch {
       return false;
