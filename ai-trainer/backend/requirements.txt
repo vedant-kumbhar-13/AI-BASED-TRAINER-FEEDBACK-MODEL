@@ -8,6 +8,8 @@ Pillow==10.0.0
 python-docx==0.8.11
 PyPDF2==3.0.1
 google-genai>=1.0.0
+google-cloud-speech>=2.21.0
+google-cloud-texttospeech>=2.16.0
 reportlab>=4.0
 groq==0.4.1
 requests==2.31.0

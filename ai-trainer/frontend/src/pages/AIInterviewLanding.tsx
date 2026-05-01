@@ -37,13 +37,14 @@ const INTERVIEW_TYPES = [
 export const AIInterviewLanding = () => {
   const navigate = useNavigate();
   const [selectedType, setSelectedType] = useState('Technical');
+  const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
 
   const handleUploadResume = () => {
-    navigate('/ai-interview-upload', { state: { interviewType: selectedType } });
+    navigate('/ai-interview-upload', { state: { interviewType: selectedType, inputMode } });
   };
 
   const handleQuickInterview = () => {
-    navigate('/ai-interview-summary', { state: { interviewType: selectedType, skipResume: true } });
+    navigate('/ai-interview-summary', { state: { interviewType: selectedType, skipResume: true, inputMode } });
   };
 
   return (
@@ -72,6 +73,30 @@ export const AIInterviewLanding = () => {
                   Receive real-time AI feedback to improve your skills.
                 </p>
                 
+                {/* Answer Mode Toggle */}
+                <div className="mb-6">
+                  <p className="text-sm font-semibold text-gray-600 mb-3">Choose Answer Mode</p>
+                  <div className="flex gap-3">
+                    <button onClick={() => setInputMode('voice')}
+                      className={`flex-1 flex flex-col items-center gap-1 px-4 py-3 rounded-xl border-2 font-semibold text-sm transition-all ${
+                        inputMode === 'voice' ? 'border-primary bg-primary-light text-primary' : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      }`}>
+                      <span className="text-xl">🎤</span>
+                      <span>Voice Mode</span>
+                      <span className="text-xs font-normal opacity-60">Record answers with mic</span>
+                    </button>
+                    <button onClick={() => setInputMode('text')}
+                      className={`flex-1 flex flex-col items-center gap-1 px-4 py-3 rounded-xl border-2 font-semibold text-sm transition-all ${
+                        inputMode === 'text' ? 'border-primary bg-primary-light text-primary' : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      }`}>
+                      <span className="text-xl">⌨️</span>
+                      <span>Text Mode</span>
+                      <span className="text-xs font-normal opacity-60">Type answers directly</span>
+                    </button>
+                  </div>
+                  {inputMode === 'voice' && <p className="text-xs text-green-600 mt-2">✓ Google Cloud AI transcription — accurate Indian English</p>}
+                </div>
+
                 {/* Action Buttons */}
                 <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
                   <button

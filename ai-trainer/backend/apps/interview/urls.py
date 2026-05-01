@@ -35,5 +35,7 @@ urlpatterns = [
 
     # PDF report download (lazy-generated, cached)
     path('report/<uuid:session_id>/', views.download_report, name='download-report'),
+    path("transcribe/", views.transcribe_audio, name="transcribe-audio"),
+    path("tts/", views.synthesize_speech, name="synthesize-speech"),
 ]
 

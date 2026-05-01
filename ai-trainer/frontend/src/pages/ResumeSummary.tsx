@@ -24,6 +24,7 @@ export const ResumeSummary = () => {
   const resume = location.state?.resume || DEFAULT_RESUME;
   const initialType = location.state?.interviewType || 'Technical';
   const skipResume = location.state?.skipResume || false;
+  const inputMode = (location.state?.inputMode as 'voice' | 'text') || 'voice';
 
   const [config, setConfig] = useState({
     interviewType: initialType,
@@ -37,7 +38,8 @@ export const ResumeSummary = () => {
     navigate('/ai-interview-session', {
       state: {
         resume: skipResume ? null : resume,
-        config
+        config,
+        inputMode,
       }
     });
   };

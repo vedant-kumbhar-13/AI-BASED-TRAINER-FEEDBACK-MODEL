@@ -182,6 +182,16 @@ CORS_ALLOW_CREDENTIALS = True
 GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
 GEMINI_API_KEYS = config('GEMINI_API_KEYS', default=GEMINI_API_KEY, cast=Csv())
 
+# ── Google Cloud APIs (STT + TTS) ─────────────────────────────────────────
+# Path to service-account JSON key file (relative to manage.py directory)
+GOOGLE_APPLICATION_CREDENTIALS = config('GOOGLE_APPLICATION_CREDENTIALS', default='')
+# Set the env var so Google SDK picks it up automatically
+import os as _os
+if GOOGLE_APPLICATION_CREDENTIALS:
+    _os.environ.setdefault('GOOGLE_APPLICATION_CREDENTIALS', GOOGLE_APPLICATION_CREDENTIALS)
+# Project ID for Cloud Speech-to-Text v2 API recognizer path
+GOOGLE_CLOUD_PROJECT = config('GOOGLE_CLOUD_PROJECT', default='')
+
 
 # ===========================================
 # YouTube Data API v3 Configuration

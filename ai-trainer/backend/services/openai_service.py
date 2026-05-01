@@ -387,11 +387,13 @@ Return ONLY this exact JSON structure — no prose, no markdown:
     def _mean(lst: list) -> float:
         return round(sum(lst) / len(lst), 1) if lst else 0.0
 
-    overall_score       = _mean(all_scores)
-    technical_score     = _mean(tech_scores) if tech_scores else overall_score
-    hr_score            = _mean(hr_scores)   if hr_scores   else overall_score
+    technical_score     = _mean(tech_scores) if tech_scores else _mean(all_scores)
+    hr_score            = _mean(hr_scores)   if hr_scores   else _mean(all_scores)
     communication_score = _mean(all_comms)
     confidence_score    = _mean(all_confs)
+
+    # Overall = average of the three displayed sub-scores (Communication, Technical, Confidence)
+    overall_score       = round((communication_score + technical_score + confidence_score) / 3, 1)
     structure_score     = _mean([nr["depth"] for nr in normalised_results])
 
     return {

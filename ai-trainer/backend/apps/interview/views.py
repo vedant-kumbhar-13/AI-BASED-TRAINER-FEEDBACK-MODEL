@@ -434,8 +434,43 @@ def interview_stats(request):
     })
 
 
-# NOTE: transcribe_audio endpoint has been removed.
-# Voice input now uses the browser's built-in Web Speech API.
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def transcribe_audio(request):
+    """POST /api/interview/transcribe/  — audio blob -> text via Cloud STT Chirp 2"""
+    audio_file = request.FILES.get("audio")
+    if not audio_file:
+        return Response({"error": "No audio file. Send as multipart/form-data."}, status=400)
+    audio_bytes = audio_file.read()
+    if len(audio_bytes) < 100:
+        return Response({"error": "Audio too short or empty."}, status=400)
+    language = request.data.get("language", "en-IN")
+    try:
+        from .services.cloud_stt_service import transcribe_audio_bytes
+        text = transcribe_audio_bytes(audio_bytes, language_code=language)
+    except Exception as e:
+        logger.error("Transcription failed: %s", e)
+        return Response({"error": f"Transcription failed: {e}"}, status=503)
+    return Response({"text": text, "language": language})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def synthesize_speech(request):
+    """POST /api/interview/tts/  — text -> MP3 audio bytes via Cloud TTS Chirp 3 HD"""
+    text = request.data.get("text", "").strip()
+    if not text:
+        return Response({"error": "text field is required."}, status=400)
+    if len(text) > 1000:
+        return Response({"error": "Text too long (max 1000 chars)."}, status=400)
+    try:
+        from .services.cloud_tts_service import synthesize_speech as _synth
+        audio_bytes = _synth(text)
+    except Exception as e:
+        logger.error("TTS failed: %s", e)
+        return Response({"error": f"Text-to-speech failed: {e}"}, status=503)
+    from django.http import HttpResponse
+    return HttpResponse(audio_bytes, content_type="audio/mpeg")
 
 
 # ===========================================

@@ -5,7 +5,7 @@
  *   1. POST /api/interview/start/  → { session_id, questions:[{id,order,text,type}] }
  *   2. POST /api/interview/submit-all/ → full evaluation
  *
- * Voice input uses the browser-native Web Speech API (SpeechRecognition).
+ * Voice input now uses Cloud STT (MediaRecorder → backend transcription).
  * No API key required — works in Chrome, Edge, and other Chromium browsers.
  */
 
@@ -20,9 +20,6 @@ import AuthService from '../services/authService';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
-// ── TypeScript shim for Web Speech API ───────────────────────────────────────
-declare const webkitSpeechRecognition: any;
-declare const SpeechRecognition: any;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Question {
@@ -63,10 +60,6 @@ async function apiPost(url: string, body: object) {
   return json;
 }
 
-// Check if browser supports Web Speech API
-const speechSupported =
-  typeof window !== 'undefined' &&
-  ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
 
 // ── Phase type ────────────────────────────────────────────────────────────────
 type Phase = 'loading' | 'answering' | 'review' | 'submitting' | 'done' | 'error';
@@ -94,21 +87,17 @@ export const InterviewSessionPage = () => {
   const [isSpeaking,  setIsSpeaking]  = useState(false);
   const [ttsEnabled,  setTtsEnabled]  = useState(true);
 
-  // Web Speech API (STT)
-  const [isListening,    setIsListening]    = useState(false);
-  const [interimText,    setInterimText]    = useState('');
-  const [silenceCountdown, setSilenceCountdown] = useState<number | null>(null);
-  const recognitionRef = useRef<any>(null);
-
-  // BUG-08: Silence detection — auto-advance after 3s of no speech
-  const silenceTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  // BUG-B fix: track the 200ms advance delay so it can be cancelled by button click
-  const advanceTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const SILENCE_TIMEOUT  = 3000; // 3 seconds
-
   // BUG-09: localStorage key for session persistence
   const STORAGE_KEY = 'interview_session_backup';
+
+  // Cloud STT recording state
+  const [isRecording,    setIsRecording]    = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
+  const audioChunksRef    = useRef<BlobPart[]>([]);
+  const audioPlayerRef    = useRef<HTMLAudioElement | null>(null);
+  // Read input mode from navigation state (set on AIInterviewLanding)
+  const inputMode = (location.state?.inputMode as 'voice' | 'text') || 'voice';
 
   const currentQuestion = questions[currentIdx] || null;
 
@@ -161,140 +150,60 @@ export const InterviewSessionPage = () => {
     startInterview();
     return () => {
       window.speechSynthesis?.cancel();
-      recognitionRef.current?.stop();
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      audioPlayerRef.current?.pause();
+      if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
     };
   }, []);
 
-  const intentionalStopRef = useRef(false);
-
-  // ── Web Speech API (STT) ──────────────────────────────────────────────────
-  const startListening = useCallback(() => {
-    if (!speechSupported) {
-      setError('Voice input is not supported in this browser. Please use Chrome or Edge.');
-      return;
-    }
-
-    // Stop any existing recognition session
-    intentionalStopRef.current = true;
-    recognitionRef.current?.stop();
-    intentionalStopRef.current = false;
-
-    const SpeechRecognitionClass =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    const recognition = new SpeechRecognitionClass();
-    recognition.continuous      = true;   // keep running until stopped
-    recognition.interimResults  = true;   // show partial results in real time
-    recognition.lang            = 'en-IN'; // Indian English accent
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
-      setIsListening(true);
-      setInterimText('');
+  // ── Cloud STT — MediaRecorder → backend transcribe ─────────────────────────
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        await sendAudioForTranscription();
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
       setError('');
-    };
-
-    recognition.onresult = (event: any) => {
-      let finalChunk  = '';
-      let interimChunk = '';
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalChunk += transcript + ' ';
-        } else {
-          interimChunk += transcript;
-        }
-      }
-
-      if (finalChunk) {
-        setCurrentAnswer(prev =>
-          prev.trim() ? `${prev.trim()} ${finalChunk.trim()}` : finalChunk.trim()
-        );
-      }
-      setInterimText(interimChunk);
-
-      // BUG-08: Reset silence timer on every speech result
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (countdownInterval.current) clearInterval(countdownInterval.current);
-      setSilenceCountdown(null);
-
-      if (finalChunk || interimChunk) {
-        // Start countdown then auto-advance
-        silenceTimerRef.current = setTimeout(() => {
-          // Begin the 3-2-1 visible countdown
-          let remaining = 3;
-          setSilenceCountdown(remaining);
-          countdownInterval.current = setInterval(() => {
-            remaining -= 1;
-            if (remaining > 0) {
-              setSilenceCountdown(remaining);
-            } else {
-              clearInterval(countdownInterval.current!);
-              countdownInterval.current = null;
-              setSilenceCountdown(null);
-              // Now actually advance
-              intentionalStopRef.current = true;
-              recognitionRef.current?.stop();
-              advanceTimerRef.current = setTimeout(() => {
-                advanceTimerRef.current = null;
-                handleNextQuestionRef.current();
-              }, 200);
-            }
-          }, 1000);
-        }, SILENCE_TIMEOUT);
-      }
-    };
-
-    recognition.onerror = (event: any) => {
-      if (event.error === 'not-allowed') {
-        setError('Microphone permission denied. Please allow mic access in your browser settings.');
-        intentionalStopRef.current = true;
-      } else if (event.error !== 'no-speech') {
-        console.error("Voice Error", event);
-        // Do not interrupt the user with aggressive errors unless absolutely breaking
-      }
-    };
-
-    recognition.onend = () => {
-      if (!intentionalStopRef.current) {
-        try {
-          // Keep recording automatically if not intentionally stopped
-          recognition.start();
-        } catch (e) {
-             // Ignore
-        }
-      } else {
-        setIsListening(false);
-        setInterimText('');
-      }
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
+    } catch (err: any) {
+      setError(err.name === 'NotAllowedError'
+        ? 'Microphone access denied. Allow mic access in browser settings.'
+        : 'Could not access microphone.');
+    }
   }, []);
 
-  const stopListening = useCallback(() => {
-    intentionalStopRef.current = true;
-    recognitionRef.current?.stop();
-    setIsListening(false);
-    setInterimText('');
-    setSilenceCountdown(null);
-    // BUG-08: Clear any pending silence timer
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
     }
-    if (countdownInterval.current) {
-      clearInterval(countdownInterval.current);
-      countdownInterval.current = null;
-    }
-    // BUG-B fix: also cancel the pending 200ms advance timer
-    if (advanceTimerRef.current) {
-      clearTimeout(advanceTimerRef.current);
-      advanceTimerRef.current = null;
-    }
+  }, []);
+
+  const sendAudioForTranscription = useCallback(async () => {
+    if (!audioChunksRef.current.length) return;
+    setIsTranscribing(true);
+    try {
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+      const blob = new Blob(audioChunksRef.current, { type: mimeType });
+      const formData = new FormData();
+      formData.append('audio', blob, 'answer.webm');
+      const res = await fetch(`${API_BASE}/api/interview/transcribe/`, {
+        method: 'POST',
+        headers: AuthService.getAuthHeaders(),
+        body: formData,
+      });
+      const data = await res.json();
+      if (res.ok && data.text) {
+        setCurrentAnswer(prev => prev.trim() ? `${prev.trim()} ${data.text}` : data.text);
+      } else if (!res.ok) { setError(`Transcription error: ${data.error || 'Unknown error'}`); }
+    } catch { setError('Transcription failed. Check connection and try again.'); }
+    finally { setIsTranscribing(false); }
   }, []);
 
   // ── Auto-read question when it changes ───────────────────────────────────
@@ -304,62 +213,53 @@ export const InterviewSessionPage = () => {
     }
   }, [currentIdx, phase]);
 
-  // ── TTS ──────────────────────────────────────────────────────────────────
-  const speakText = (text: string) => {
-    if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    stopListening(); // Don't record the AI's own voice
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate  = 0.9;
-
-    // Pick the best available voice — read at call-time so voices are populated
-    const pickVoice = () => {
-      const voices = window.speechSynthesis.getVoices();
-      return voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
-          || voices.find(v => v.lang === 'en-IN')
-          || voices.find(v => v.lang.startsWith('en'))
-          || voices[0]
-          || null;
-    };
-
-    const bestVoice = pickVoice();
-    if (bestVoice) utterance.voice = bestVoice;
-
-    // Chrome bug fix: synthesis pauses mid-sentence on long text.
-    // Resume every 5 s only if Chrome already paused it on its own.
-    const keepAlive = setInterval(() => {
-      if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-    }, 5000);
-
-    utterance.onstart = () => setIsListening(false);
-    utterance.onend   = () => {
-      clearInterval(keepAlive);
-      setIsSpeaking(false);
-      startListening(); // automatically start recording once question is read
-    };
-    utterance.onerror = () => {
-      clearInterval(keepAlive);
-      setIsSpeaking(false);
-    };
-
+  // ── TTS (Cloud TTS with browser fallback) ────────────────────────────────
+  const speakText = async (text: string) => {
+    if (!ttsEnabled || !text) return;
     setIsSpeaking(true);
-    window.speechSynthesis.speak(utterance);
+    try {
+      const token = AuthService.getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/interview/tts/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...token },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error('TTS API failed');
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioPlayerRef.current = audio;
+      audio.playbackRate = 1.0;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        setIsSpeaking(false);
+        // Auto-start recording in voice mode after question is read
+        if (inputMode === 'voice') setTimeout(() => startRecording(), 500);
+      };
+      audio.onerror = () => { URL.revokeObjectURL(url); setIsSpeaking(false); };
+      await audio.play();
+    } catch (err) {
+      console.warn('Cloud TTS failed, falling back to browser TTS', err);
+      // Graceful fallback to browser SpeechSynthesis
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        const utt = new SpeechSynthesisUtterance(text);
+        utt.rate = 0.9;
+        utt.onend = () => { setIsSpeaking(false); if (inputMode === 'voice') setTimeout(() => startRecording(), 500); };
+        utt.onerror = () => setIsSpeaking(false);
+        window.speechSynthesis.speak(utt);
+      } else { setIsSpeaking(false); }
+    }
   };
 
   const stopSpeaking = () => {
+    audioPlayerRef.current?.pause();
+    audioPlayerRef.current = null;
     window.speechSynthesis?.cancel();
     setIsSpeaking(false);
   };
 
-  const toggleTts = () => {
-    if (isSpeaking) stopSpeaking();
-    setTtsEnabled(prev => !prev);
-  };
-
-  const toggleListening = () => {
-    if (isListening) stopListening(); else startListening();
-  };
+  const toggleTts = () => { if (isSpeaking) stopSpeaking(); setTtsEnabled(prev => !prev); };
 
   // ── Start Interview ───────────────────────────────────────────────────────
   const startInterview = async () => {
@@ -401,28 +301,18 @@ export const InterviewSessionPage = () => {
   };
 
   const handleNextQuestion = () => {
-    // BUG-B fix: if user clicks the button, cancel any pending silence-triggered advance
-    if (advanceTimerRef.current) {
-      clearTimeout(advanceTimerRef.current);
-      advanceTimerRef.current = null;
-    }
     stopSpeaking();
-    stopListening();
+    if (isRecording) stopRecording();
     saveCurrentAnswer();
     if (currentIdx + 1 >= questions.length) {
       setPhase('review');
     } else {
       setCurrentIdx(prev => prev + 1);
       setCurrentAnswer('');
-      setInterimText('');
       setTimer(0);
     }
   };
 
-  // BUG-08: Stable ref for handleNextQuestion so the silence timer callback
-  // always calls the latest version without stale closure issues.
-  const handleNextQuestionRef = useRef(handleNextQuestion);
-  useEffect(() => { handleNextQuestionRef.current = handleNextQuestion; });
 
   const handleSkipQuestion = () => {
     setCurrentAnswer('[No answer provided]');
@@ -430,13 +320,12 @@ export const InterviewSessionPage = () => {
   };
 
   const handleGoToQuestion = (idx: number) => {
-    stopListening();
+    if (isRecording) stopRecording();
     const saved = collectedAnswers[idx];
     setCurrentIdx(idx);
     setCurrentAnswer(
       saved && saved.answerText !== '[No answer provided]' ? saved.answerText : ''
     );
-    setInterimText('');
     setTimer(0);
     setPhase('answering');
   };
@@ -459,7 +348,7 @@ export const InterviewSessionPage = () => {
 
   const handleExitInterview = () => {
     stopSpeaking();
-    stopListening();
+    if (isRecording) stopRecording();
     if (confirm('Are you sure you want to exit? Your progress will be saved and can be resumed.')) {
       navigate('/ai-interview');
     }
@@ -675,96 +564,68 @@ export const InterviewSessionPage = () => {
 
             {/* Answer section */}
             <div className="p-7">
-              {/* Mic controls + listening indicator */}
-              <div className="flex items-center gap-3 mb-3 flex-wrap">
-                <span className="text-sm font-bold text-gray-700">Your Response</span>
-
-                {speechSupported ? (
-                  <button
-                    onClick={toggleListening}
-                    title={isListening ? 'Stop recording' : 'Start voice input'}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold transition-all ${
-                      isListening
-                        ? 'bg-red-500 text-white shadow-md'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}
-                  >
-                    {isListening
-                      ? <><MicOff className="w-4 h-4" /> Stop</>
-                      : <><Mic className="w-4 h-4" /> Speak</>}
-                  </button>
-                ) : (
-                  <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded-full">
-                    Voice not supported — please type
-                  </span>
-                )}
-
-                {/* Waveform animation while listening */}
-                {isListening && (
-                  <span className="flex items-end gap-0.5 h-5">
-                    {[1, 2, 3, 4, 5].map((i) => (
-                      <span
-                        key={i}
-                        className="w-1 bg-red-500 rounded-full"
-                        style={{
-                          height: `${8 + (i % 3) * 6}px`,
-                          animation: `pulse 0.${6 + i}s ease-in-out infinite alternate`,
-                        }}
-                      />
-                    ))}
-                    <span className="ml-1 text-xs text-red-500 font-medium">Listening…</span>
-                  </span>
-                )}
-
-                {/* Silence countdown */}
-                {silenceCountdown !== null && (
-                  <span className="text-xs text-orange-500 font-medium animate-pulse">
-                    Auto-advancing in {silenceCountdown}s…
-                  </span>
-                )}
-              </div>
-
-              {/* ── Textarea — shows confirmed text + live interim ── */}
-              <div className="relative">
-                <textarea
-                  value={isListening && interimText
-                    ? currentAnswer + (currentAnswer ? ' ' : '') + interimText
-                    : currentAnswer}
-                  onChange={e => {
-                    // If user types while NOT listening, accept edit normally
-                    if (!isListening) setCurrentAnswer(e.target.value);
-                  }}
-                  readOnly={isListening}
-                  placeholder="Type your answer here, or click 'Speak' to use your microphone…"
-                  rows={6}
-                  className={`w-full p-4 border rounded-xl resize-none text-gray-800 placeholder-gray-400 transition-all ${
-                    isListening
-                      ? 'border-red-400 ring-2 ring-red-200 bg-red-50 focus:outline-none cursor-default'
-                      : 'border-gray-300 focus:border-primary focus:ring-1 focus:ring-primary'
-                  }`}
-                />
-                {/* Interim text overlay hint */}
-                {isListening && interimText && (
-                  <p className="absolute bottom-3 right-3 text-xs text-red-400 italic pointer-events-none">
-                    hearing you…
-                  </p>
-                )}
-              </div>
-
+              {/* Recording controls — voice mode only */}
+              {inputMode === 'voice' && (
+                <div className="flex items-center gap-3 mb-3 flex-wrap">
+                  <span className="text-sm font-bold text-gray-700">Your Response</span>
+                  {!isRecording && !isTranscribing && (
+                    <button onClick={startRecording} disabled={isSpeaking}
+                      className="flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-semibold rounded-full hover:bg-primary-dark transition disabled:opacity-40">
+                      <Mic className="w-4 h-4" /> Record Answer
+                    </button>
+                  )}
+                  {isRecording && (
+                    <button onClick={stopRecording}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-500 text-white text-sm font-semibold rounded-full hover:bg-red-600 transition animate-pulse">
+                      <MicOff className="w-4 h-4" /> Stop Recording
+                    </button>
+                  )}
+                  {isRecording && (
+                    <span className="flex items-end gap-0.5 h-5">
+                      {[1,2,3,4,5].map(i => <span key={i} className="w-1 bg-red-500 rounded-full"
+                        style={{ height: `${8+(i%3)*6}px`, animation:`pulse 0.${6+i}s ease-in-out infinite alternate` }} />)}
+                      <span className="ml-1 text-xs text-red-500 font-medium">Recording…</span>
+                    </span>
+                  )}
+                  {isTranscribing && (
+                    <span className="flex items-center gap-2 text-xs text-blue-600">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Transcribing with AI…
+                    </span>
+                  )}
+                </div>
+              )}
+              {inputMode === 'text' && (
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-sm font-bold text-gray-700">Your Response</span>
+                  <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">⌨️ Text mode</span>
+                </div>
+              )}
+              <textarea
+                value={currentAnswer}
+                onChange={e => setCurrentAnswer(e.target.value)}
+                disabled={isRecording || isTranscribing}
+                placeholder={inputMode === 'voice'
+                  ? (isRecording ? 'Recording — click Stop when finished'
+                     : isTranscribing ? 'AI is transcribing your audio…'
+                     : 'Click Record Answer, speak, then click Stop. You can edit the text too.')
+                  : 'Type your answer here…'}
+                rows={6}
+                className={`w-full p-4 border rounded-xl resize-none text-gray-800 placeholder-gray-400 transition-all ${
+                  isRecording ? 'border-red-300 bg-red-50 cursor-not-allowed'
+                  : isTranscribing ? 'border-blue-300 bg-blue-50 cursor-wait'
+                  : 'border-gray-300 focus:border-primary focus:ring-1 focus:ring-primary'
+                }`}
+              />
               {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
-
-              {/* Action row */}
               <div className="flex justify-between items-center mt-4">
-                <span className="text-xs text-gray-400">
-                  {currentAnswer.length} characters
-                </span>
+                <span className="text-xs text-gray-400">{currentAnswer.length} characters</span>
                 <div className="flex gap-3">
                   <button onClick={handleSkipQuestion}
                     className="flex items-center gap-1.5 px-4 py-2 text-gray-500 hover:text-gray-700 text-sm font-medium transition">
                     <SkipForward className="w-4 h-4" /> Skip
                   </button>
-                  <button onClick={handleNextQuestion}
-                    className="px-6 py-3 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl shadow-button flex items-center gap-2 transition-all">
+                  <button onClick={handleNextQuestion} disabled={isRecording || isTranscribing}
+                    className="px-6 py-3 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl shadow-button flex items-center gap-2 transition-all disabled:opacity-50">
                     {currentIdx + 1 >= questions.length
                       ? <><CheckCircle className="w-5 h-5" /> Review Answers</>
                       : <><ChevronRight className="w-5 h-5" /> Next Question</>}
@@ -777,8 +638,9 @@ export const InterviewSessionPage = () => {
           {/* Tip */}
           <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
             <p className="text-sm text-blue-700">
-              💡 <strong>Tip:</strong> Click <strong>Speak</strong> and talk — your words appear in the box in real time.
-              {!speechSupported && ' (Use Chrome or Edge for voice input.)'}
+              {inputMode === 'voice'
+                ? '💡 Click Record Answer and speak. Click Stop when done — AI transcribes it. Edit the text if needed before moving on.'
+                : '💡 Type your answer in the box above. Click Next Question when ready.'}
             </p>
           </div>
 
