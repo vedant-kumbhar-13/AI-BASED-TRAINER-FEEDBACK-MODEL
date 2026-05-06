@@ -75,21 +75,7 @@ export const Navigation = () => {
 
               {showUserMenu && (
                 <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
-                  <Link
-                    to="/profile"
-                    className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    onClick={() => setShowUserMenu(false)}
-                  >
-                    Profile Settings
-                  </Link>
-                  <Link
-                    to="/preferences"
-                    className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    onClick={() => setShowUserMenu(false)}
-                  >
-                    Preferences
-                  </Link>
-                  <hr className="my-1 border-gray-100" />
+                  {/* Profile Settings and Preferences removed — only Logout remains */}
                   <button
                     onClick={handleLogout}
                     className="w-full text-left px-4 py-2 text-sm text-primary hover:bg-primary-light"

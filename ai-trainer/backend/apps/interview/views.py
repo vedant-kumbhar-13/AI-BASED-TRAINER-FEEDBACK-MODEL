@@ -94,6 +94,54 @@ class ResumeViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_201_CREATED
             )
 
+        # Step 1.5: Validate that the PDF actually contains resume-like content
+        # This catches invoices, receipts, random documents, image-only PDFs, etc.
+        text_lower = (raw_text or '').lower()
+        text_len = len(raw_text.strip()) if raw_text else 0
+
+        # Check 1: Too little text (scanned image PDF or blank)
+        if text_len < 50:
+            resume.is_parsed = False
+            resume.save()
+            return Response(
+                {
+                    **ResumeDetailSerializer(resume).data,
+                    'parsing_error': (
+                        'This PDF contains very little readable text. It may be a scanned image or an empty document. '
+                        'Please upload a text-based (ATS-friendly) resume in PDF format.'
+                    ),
+                    'is_parsed': False,
+                },
+                status=status.HTTP_201_CREATED
+            )
+
+        # Check 2: Look for resume-specific keywords
+        resume_indicators = [
+            'experience', 'education', 'skills', 'projects', 'work history',
+            'objective', 'summary', 'qualification', 'certification', 'internship',
+            'university', 'college', 'degree', 'b.tech', 'b.e', 'b.sc', 'bca', 'mca',
+            'm.tech', 'mba', 'bachelor', 'master', 'cgpa', 'gpa',
+            'linkedin', 'github', 'portfolio', 'resume', 'curriculum vitae', 'cv',
+            'programming', 'software', 'developer', 'engineer', 'proficient',
+        ]
+        indicator_count = sum(1 for kw in resume_indicators if kw in text_lower)
+
+        if indicator_count < 3:
+            resume.is_parsed = False
+            resume.save()
+            return Response(
+                {
+                    **ResumeDetailSerializer(resume).data,
+                    'parsing_error': (
+                        'This PDF does not appear to be a resume. We could not find key sections like '
+                        'Skills, Education, or Experience. Please upload your actual resume in PDF format. '
+                        'Tip: Use an ATS-friendly resume template with clear section headings.'
+                    ),
+                    'is_parsed': False,
+                },
+                status=status.HTTP_201_CREATED
+            )
+
         # Step 2: Try AI (Gemini) parsing — fall back to regex parser on failure
         ai_parse_failed = False
         try:
@@ -441,7 +489,11 @@ def transcribe_audio(request):
     audio_file = request.FILES.get("audio")
     if not audio_file:
         return Response({"error": "No audio file. Send as multipart/form-data."}, status=400)
+    # Guard: reject uploads > 10 MB (60s of WebM audio is ~1-2 MB)
+    MAX_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB
     audio_bytes = audio_file.read()
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        return Response({"error": "Audio file too large. Maximum 60 seconds of recording allowed."}, status=400)
     if len(audio_bytes) < 100:
         return Response({"error": "Audio too short or empty."}, status=400)
     language = request.data.get("language", "en-IN")
@@ -474,6 +526,351 @@ def synthesize_speech(request):
 
 
 # ===========================================
+# Live Interview Mode Views
+# ===========================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def live_start_interview(request):
+    """
+    POST /api/interview/live/start/
+    Creates a session and generates the FIRST question via Gemini.
+    Subsequent questions come from /live/chat/.
+    """
+    interview_type = request.data.get('interview_type', 'Mixed')
+    resume_id = request.data.get('resume_id')
+    total_questions = max(3, min(20, int(request.data.get('total_questions', 8))))
+
+    # Auto-abandon stuck sessions
+    existing = InterviewSession.objects.filter(user=request.user, status='in_progress').first()
+    if existing:
+        existing.status = 'abandoned'
+        existing.end_time = timezone.now()
+        existing.save()
+
+    # Resolve resume
+    resume = None
+    if resume_id:
+        try:
+            resume = Resume.objects.get(id=resume_id, user=request.user)
+        except Resume.DoesNotExist:
+            return Response({'error': 'Resume not found'}, status=status.HTTP_404_NOT_FOUND)
+    else:
+        resume = Resume.objects.filter(user=request.user).order_by('-created_at').first()
+
+    # Build resume context — comprehensive for better question generation
+    resume_context = "No resume provided."
+    if resume:
+        skills_str = ', '.join(resume.skills or [])
+        exp_str = '\n'.join([
+            f"- {e.get('title','')}, {e.get('company','')}, {e.get('duration','')}"
+            for e in (resume.experience or []) if isinstance(e, dict)
+        ])
+        edu_str = '\n'.join([
+            f"- {e.get('degree','')}, {e.get('institution','')}, {e.get('year','')}"
+            for e in (resume.education or []) if isinstance(e, dict)
+        ])
+        projects_str = '\n'.join([
+            f"- {p.get('name','')}: {p.get('description','')[:150]}"
+            for p in (resume.projects or []) if isinstance(p, dict)
+        ])
+        raw_excerpt = (resume.raw_text or '')[:500]
+        resume_context = f"Summary: {resume.summary or ''}\nSkills: {skills_str}\nExperience:\n{exp_str}\nEducation:\n{edu_str}\nProjects:\n{projects_str}\nResume Excerpt: {raw_excerpt}"
+
+    # Create session
+    with transaction.atomic():
+        session = InterviewSession.objects.create(
+            user=request.user,
+            resume=resume,
+            interview_type=interview_type,
+            total_questions=total_questions,
+            status='in_progress',
+            start_time=timezone.now(),
+            current_question_index=0,
+        )
+
+    # Generate first question
+    try:
+        from services.openai_service import generate_live_question
+        result = generate_live_question(
+            resume_context=resume_context,
+            conversation_history=[],
+            interview_type=interview_type,
+            question_number=1,
+            total_questions=total_questions,
+        )
+    except Exception as e:
+        session.delete()
+        logger.error(f"Live Q1 generation failed: {e}")
+        return Response({'error': 'Failed to generate first question.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    first_q = InterviewQuestion.objects.create(
+        session=session,
+        question_text=result['question_text'],
+        question_number=1,
+        category=result.get('category', 'hr'),
+        difficulty=1,
+        context_used='Q1 opener',
+    )
+
+    return Response({
+        'session_id': str(session.id),
+        'current_question': {
+            'id': str(first_q.id),
+            'question_text': first_q.question_text,
+            'question_number': 1,
+            'category': first_q.category,
+        },
+        'total_questions': total_questions,
+        'interview_type': interview_type,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def live_chat(request):
+    """
+    POST /api/interview/live/chat/
+    Saves the answer, builds conversation history, generates next question.
+    """
+    session_id = request.data.get('session_id')
+    answer_text = request.data.get('answer_text', '').strip()
+    question_number = int(request.data.get('question_number', 1))
+    current_question_id = request.data.get('current_question_id')
+
+    if not session_id:
+        return Response({'error': 'session_id is required'}, status=400)
+
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+    if session.status == 'completed':
+        return Response({'error': 'Session already completed'}, status=409)
+
+    # Save the answer
+    if current_question_id and answer_text:
+        try:
+            current_q = InterviewQuestion.objects.get(id=current_question_id, session=session)
+            InterviewAnswer.objects.update_or_create(
+                question=current_q,
+                defaults={'answer_text': answer_text, 'score': 0, 'ai_feedback': ''}
+            )
+            session.current_question_index = question_number
+            session.save(update_fields=['current_question_index'])
+        except InterviewQuestion.DoesNotExist:
+            pass
+
+    # Build conversation history from DB
+    all_questions = InterviewQuestion.objects.filter(
+        session=session
+    ).order_by('question_number').prefetch_related('answer')
+
+    conversation_history = []
+    for q in all_questions:
+        conversation_history.append({'role': 'interviewer', 'text': q.question_text})
+        try:
+            ans = q.answer
+            if ans and ans.answer_text:
+                conversation_history.append({'role': 'candidate', 'text': ans.answer_text})
+        except InterviewAnswer.DoesNotExist:
+            pass
+
+    # Check if complete
+    total_questions = session.total_questions or 8
+    next_number = question_number + 1
+
+    if next_number > total_questions:
+        return Response({
+            'next_question': None,
+            'is_last': True,
+            'questions_answered': question_number,
+            'total_questions': total_questions,
+        })
+
+    # Resume context — comprehensive
+    resume_context = "No resume provided."
+    if session.resume:
+        r = session.resume
+        skills_str = ', '.join(r.skills or [])
+        exp_str = '\n'.join([
+            f"- {e.get('title','')}, {e.get('company','')}, {e.get('duration','')}"
+            for e in (r.experience or []) if isinstance(e, dict)
+        ])
+        edu_str = '\n'.join([
+            f"- {e.get('degree','')}, {e.get('institution','')}, {e.get('year','')}"
+            for e in (r.education or []) if isinstance(e, dict)
+        ])
+        projects_str = '\n'.join([
+            f"- {p.get('name','')}: {p.get('description','')[:150]}"
+            for p in (r.projects or []) if isinstance(p, dict)
+        ])
+        raw_excerpt = (r.raw_text or '')[:500]
+        resume_context = f"Summary: {r.summary or ''}\nSkills: {skills_str}\nExperience:\n{exp_str}\nEducation:\n{edu_str}\nProjects:\n{projects_str}\nResume Excerpt: {raw_excerpt}"
+
+    # Generate next question
+    try:
+        from services.openai_service import generate_live_question
+        result = generate_live_question(
+            resume_context=resume_context,
+            conversation_history=conversation_history,
+            interview_type=session.interview_type or 'Mixed',
+            question_number=next_number,
+            total_questions=total_questions,
+        )
+    except Exception as e:
+        logger.error(f"Live question generation failed: {e}")
+        return Response({'error': f'AI question generation failed: {str(e)}'}, status=503)
+
+    next_q = InterviewQuestion.objects.create(
+        session=session,
+        question_text=result['question_text'],
+        question_number=next_number,
+        category=result.get('category', 'general'),
+        difficulty=min(5, 1 + next_number // 2),
+        context_used=f"Q{next_number} | {result.get('rationale', '')}",
+    )
+
+    return Response({
+        'next_question': {
+            'id': str(next_q.id),
+            'question_text': next_q.question_text,
+            'question_number': next_number,
+            'category': next_q.category,
+        },
+        'is_last': next_number >= total_questions,
+        'questions_answered': question_number,
+        'total_questions': total_questions,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def live_submit_all(request):
+    """
+    POST /api/interview/live/submit-all/
+    Collects full transcript from DB and runs holistic Gemini evaluation.
+    """
+    session_id = request.data.get('session_id')
+    if not session_id:
+        return Response({'error': 'session_id required'}, status=400)
+
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+    if session.status == 'completed':
+        return Response({'error': 'Already evaluated'}, status=409)
+
+    # Build answers from DB
+    all_questions = InterviewQuestion.objects.filter(
+        session=session
+    ).order_by('question_number').prefetch_related('answer')
+
+    answers = []
+    for q in all_questions:
+        ans_text = '[No answer provided]'
+        try:
+            if q.answer and q.answer.answer_text:
+                ans_text = q.answer.answer_text
+        except InterviewAnswer.DoesNotExist:
+            pass
+        answers.append({
+            'questionId': str(q.id),
+            'questionText': q.question_text,
+            'questionType': q.category or 'general',
+            'answerText': ans_text,
+        })
+
+    if len(answers) < 1:
+        return Response({'error': 'No answers found'}, status=400)
+
+    # Evaluate
+    try:
+        from services.openai_service import evaluate_live_interview
+        evaluation = evaluate_live_interview(answers)
+    except Exception as e:
+        logger.error(f"Live evaluation failed: {e}")
+        return Response({'error': 'Evaluation failed. Please try again.'}, status=503)
+
+    # Persist scores
+    with transaction.atomic():
+        scores = evaluation.get('scores', {})
+
+        def _clamp100(v):
+            return round(max(0.0, min(100.0, float(v))), 1)
+
+        overall_score = _clamp100(scores.get('overall', evaluation.get('overall_score', 0)))
+        hr_score = _clamp100(scores.get('hr', 0))
+        tech_score = _clamp100(scores.get('technical', 0))
+        comm_score = _clamp100(scores.get('communication', 0))
+        conf_score = _clamp100(scores.get('confidence', 0))
+        struct_score = _clamp100(scores.get('structure', 0))
+
+        session.status = 'completed'
+        session.end_time = timezone.now()
+        session.overall_score = overall_score
+        session.communication_score = comm_score
+        session.technical_score = tech_score
+        session.confidence_score = conf_score
+        session.hr_avg_score = hr_score
+        session.save()
+
+        result = EvaluationResult.objects.create(
+            session=session,
+            overall_score=overall_score,
+            hr_score=hr_score,
+            technical_score=tech_score,
+            communication_score=comm_score,
+            confidence_score=conf_score,
+            structure_score=struct_score,
+            summary_feedback=evaluation.get('summary', ''),
+            top_strength=evaluation.get('top_strength', ''),
+            top_weakness=evaluation.get('top_weakness', ''),
+            top_3_recommendations=json.dumps(evaluation.get('recommendations', [])),
+            placement_readiness=evaluation.get('placement_readiness', 'needs_work'),
+        )
+
+        # Save per-question scores
+        for qr in evaluation.get('question_results', []):
+            q_index = qr.get('question_index')
+            if q_index is None:
+                continue
+            try:
+                question = session.questions.get(question_number=q_index)
+                matching = next((a for a in answers if str(a.get('questionId', '')) == str(question.id)), None)
+                InterviewAnswer.objects.update_or_create(
+                    question=question,
+                    defaults={
+                        'answer_text': matching.get('answerText', '') if matching else '',
+                        'score': float(qr.get('score', 0)),
+                        'ai_feedback': qr.get('feedback', ''),
+                        'strengths': [qr.get('strength', '')] if qr.get('strength') else [],
+                        'improvements': [qr.get('improvement', '')] if qr.get('improvement') else [],
+                        'relevance_score': float(qr.get('relevance', 0)),
+                        'clarity_score': float(qr.get('communication', 0)),
+                        'depth_score': float(qr.get('depth', 0)),
+                    }
+                )
+            except InterviewQuestion.DoesNotExist:
+                continue
+
+    return Response({
+        'evaluation_id': str(result.id),
+        'session_id': str(session.id),
+        'overall_score': overall_score,
+        'placement_readiness': evaluation.get('placement_readiness', 'needs_work'),
+        'summary': evaluation.get('summary', ''),
+        'top_strength': evaluation.get('top_strength', ''),
+        'top_weakness': evaluation.get('top_weakness', ''),
+        'recommendations': evaluation.get('recommendations', []),
+        'scores': {
+            'hr': hr_score,
+            'technical': tech_score,
+            'communication': comm_score,
+            'confidence': conf_score,
+            'structure': struct_score,
+        },
+        'question_results': evaluation.get('question_results', []),
+    }, status=status.HTTP_200_OK)
+
+
+# ===========================================
+
 # Submit-All Endpoint (BUG-04 Fix)
 # ===========================================
 

@@ -210,8 +210,6 @@ def generate_report_pdf(session: "InterviewSession") -> bytes:
         ("Communication", _clamp(getattr(evaluation, "communication_score", session.communication_score))),
         ("Technical",     _clamp(getattr(evaluation, "technical_score",     session.technical_score))),
         ("Confidence",    _clamp(getattr(evaluation, "confidence_score",    session.confidence_score))),
-        ("HR",            _clamp(getattr(evaluation, "hr_score",            session.hr_avg_score))),
-        ("Structure",     _clamp(getattr(evaluation, "structure_score",     0))),
         ("Overall",       overall_score),
     ]
 

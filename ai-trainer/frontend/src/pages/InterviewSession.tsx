@@ -93,9 +93,12 @@ export const InterviewSessionPage = () => {
   // Cloud STT recording state
   const [isRecording,    setIsRecording]    = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [recordingTimer, setRecordingTimer] = useState(0);   // seconds elapsed while recording
   const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const audioChunksRef    = useRef<BlobPart[]>([]);
   const audioPlayerRef    = useRef<HTMLAudioElement | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const MAX_RECORDING_SECS = 55; // auto-stop before Cloud STT 60s limit
   // Read input mode from navigation state (set on AIInterviewLanding)
   const inputMode = (location.state?.inputMode as 'voice' | 'text') || 'voice';
 
@@ -107,6 +110,32 @@ export const InterviewSessionPage = () => {
     const id = setInterval(() => setTimer(t => t + 1), 1000);
     return () => clearInterval(id);
   }, [phase, currentIdx]);
+
+  // ── Recording countdown: auto-stop at MAX_RECORDING_SECS ────────────────
+  useEffect(() => {
+    if (isRecording) {
+      setRecordingTimer(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTimer(prev => {
+          if (prev + 1 >= MAX_RECORDING_SECS) {
+            // Auto-stop recording
+            if (mediaRecorderRef.current?.state === 'recording') {
+              mediaRecorderRef.current.stop();
+              setIsRecording(false);
+            }
+            return 0;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+      return () => {
+        if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      };
+    } else {
+      setRecordingTimer(0);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    }
+  }, [isRecording]);
 
   // ── BUG-09: Persist session to localStorage whenever answers/index change ──
   useEffect(() => {
@@ -121,12 +150,9 @@ export const InterviewSessionPage = () => {
 
   // ── Mount: start interview + pre-load TTS voices ─────────────────────────
   useEffect(() => {
-    // Pre-load voices so they are available when the first question plays.
-    // Chrome populates getVoices() asynchronously; registering onvoiceschanged
-    // forces it to load immediately rather than returning [] on first call.
     if (window.speechSynthesis && window.speechSynthesis.onvoiceschanged !== undefined) {
       window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices(); // just trigger population
+        window.speechSynthesis.getVoices();
       };
     }
 
@@ -142,7 +168,7 @@ export const InterviewSessionPage = () => {
           setCollectedAnswers(backup.collectedAnswers || []);
           setCurrentAnswer('');
           setPhase('answering');
-          return; // skip startInterview()
+          return;
         }
       } catch { /* corrupted — fall through to fresh start */ }
     }
@@ -152,10 +178,11 @@ export const InterviewSessionPage = () => {
       window.speechSynthesis?.cancel();
       audioPlayerRef.current?.pause();
       if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
   }, []);
 
-  // ── Cloud STT — MediaRecorder → backend transcribe ─────────────────────────
+  // ── Cloud STT — MediaRecorder → background transcription ───────────────
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -163,9 +190,10 @@ export const InterviewSessionPage = () => {
       const recorder = new MediaRecorder(stream, { mimeType });
       audioChunksRef.current = [];
       recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
-        await sendAudioForTranscription();
+        // Fire-and-forget — transcription runs in the background
+        sendAudioForTranscription();
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
@@ -187,6 +215,7 @@ export const InterviewSessionPage = () => {
 
   const sendAudioForTranscription = useCallback(async () => {
     if (!audioChunksRef.current.length) return;
+    // Non-blocking: show a subtle indicator but DON'T disable the textarea
     setIsTranscribing(true);
     try {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
@@ -417,37 +446,82 @@ export const InterviewSessionPage = () => {
     );
   }
 
-  // Review screen
+  // Review screen — professional layout matching feedback page
   if (phase === 'review') {
+    const answeredCount = collectedAnswers.filter(a => a && a.answerText !== '[No answer provided]').length;
+    const skippedCount = questions.length - answeredCount;
+
     return (
       <div className="min-h-screen bg-gray-50">
         <Navigation />
         <main className="pt-16">
           <div className="max-w-3xl mx-auto px-6 py-8">
-            <div className="text-center mb-8">
-              <CheckCircle className="w-12 h-12 text-green-500 mx-auto mb-3" />
-              <h2 className="text-2xl font-bold text-gray-800">Review Your Answers</h2>
-              <p className="text-gray-500 mt-1">Edit any answer before submitting</p>
+            {/* Header card */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-8 mb-6 shadow-card text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-green-100 to-white border-4 border-green-400 flex items-center justify-center">
+                <CheckCircle className="w-8 h-8 text-green-500" />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-1">Review Your Answers</h2>
+              <p className="text-gray-500 text-sm mb-4">Review and edit any answer before final submission</p>
+              <div className="flex justify-center gap-6">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-green-600">{answeredCount}</p>
+                  <p className="text-xs text-gray-500">Answered</p>
+                </div>
+                <div className="w-px bg-gray-200" />
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-gray-400">{skippedCount}</p>
+                  <p className="text-xs text-gray-500">Skipped</p>
+                </div>
+                <div className="w-px bg-gray-200" />
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-primary">{questions.length}</p>
+                  <p className="text-xs text-gray-500">Total</p>
+                </div>
+              </div>
             </div>
 
-            <div className="space-y-4 mb-8">
+            {/* Question list */}
+            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-card mb-6">
+              <div className="p-4 border-b border-gray-200 bg-gray-50">
+                <h3 className="font-bold text-gray-800 text-sm">Question-by-Question Review</h3>
+              </div>
               {questions.map((q, idx) => {
-                const ans     = collectedAnswers[idx];
+                const ans = collectedAnswers[idx];
                 const answered = ans && ans.answerText !== '[No answer provided]';
+                const answerPreview = answered
+                  ? (ans.answerText.length > 120 ? ans.answerText.slice(0, 120) + '\u2026' : ans.answerText)
+                  : null;
                 return (
-                  <div key={q.id} className="bg-white border border-gray-200 rounded-xl p-5 shadow-card">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs text-primary font-semibold mb-1">Q{idx + 1} · {q.type}</p>
-                        <p className="text-sm font-bold text-gray-800 mb-2">{q.text}</p>
-                        <p className={`text-sm ${answered ? 'text-gray-600' : 'text-gray-400 italic'}`}>
-                          {ans?.answerText || 'Not answered'}
-                        </p>
+                  <div key={q.id} className="border-b border-gray-100 last:border-0">
+                    <div className="p-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-3 flex-1 min-w-0">
+                          <span className="flex-shrink-0 w-8 h-8 rounded-full bg-primary-light text-primary font-bold flex items-center justify-center text-sm">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-semibold text-gray-400 uppercase">{q.type}</span>
+                              {answered ? (
+                                <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded-full">{'\u2713'} Answered</span>
+                              ) : (
+                                <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{'\u2014'} Skipped</span>
+                              )}
+                            </div>
+                            <p className="text-sm font-bold text-gray-800 mb-1">{q.text}</p>
+                            {answerPreview && (
+                              <p className="text-sm text-gray-500 bg-gray-50 p-2 rounded-lg border border-gray-100 mt-2">
+                                {answerPreview}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <button onClick={() => handleGoToQuestion(idx)}
+                          className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 border border-primary text-primary text-xs font-bold rounded-lg hover:bg-primary-light transition">
+                          <Edit3 className="w-3.5 h-3.5" /> Edit
+                        </button>
                       </div>
-                      <button onClick={() => handleGoToQuestion(idx)}
-                        className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 border border-primary text-primary text-xs font-bold rounded-lg hover:bg-primary-light transition">
-                        <Edit3 className="w-3 h-3" /> Edit
-                      </button>
                     </div>
                   </div>
                 );
@@ -568,7 +642,7 @@ export const InterviewSessionPage = () => {
               {inputMode === 'voice' && (
                 <div className="flex items-center gap-3 mb-3 flex-wrap">
                   <span className="text-sm font-bold text-gray-700">Your Response</span>
-                  {!isRecording && !isTranscribing && (
+                  {!isRecording && (
                     <button onClick={startRecording} disabled={isSpeaking}
                       className="flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-semibold rounded-full hover:bg-primary-dark transition disabled:opacity-40">
                       <Mic className="w-4 h-4" /> Record Answer
@@ -581,15 +655,22 @@ export const InterviewSessionPage = () => {
                     </button>
                   )}
                   {isRecording && (
-                    <span className="flex items-end gap-0.5 h-5">
-                      {[1,2,3,4,5].map(i => <span key={i} className="w-1 bg-red-500 rounded-full"
-                        style={{ height: `${8+(i%3)*6}px`, animation:`pulse 0.${6+i}s ease-in-out infinite alternate` }} />)}
-                      <span className="ml-1 text-xs text-red-500 font-medium">Recording…</span>
+                    <span className="flex items-center gap-2">
+                      <span className="flex items-end gap-0.5 h-5">
+                        {[1,2,3,4,5].map(i => <span key={i} className="w-1 bg-red-500 rounded-full"
+                          style={{ height: `${8+(i%3)*6}px`, animation:`pulse 0.${6+i}s ease-in-out infinite alternate` }} />)}
+                      </span>
+                      <span className="text-xs text-red-500 font-mono font-bold">
+                        {MAX_RECORDING_SECS - recordingTimer}s left
+                      </span>
+                      {recordingTimer >= MAX_RECORDING_SECS - 10 && (
+                        <span className="text-xs text-red-600 font-medium animate-pulse">Auto-stop soon</span>
+                      )}
                     </span>
                   )}
-                  {isTranscribing && (
-                    <span className="flex items-center gap-2 text-xs text-blue-600">
-                      <Loader2 className="w-3 h-3 animate-spin" /> Transcribing with AI…
+                  {isTranscribing && !isRecording && (
+                    <span className="flex items-center gap-2 text-xs text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Transcribing in background…
                     </span>
                   )}
                 </div>
@@ -603,16 +684,16 @@ export const InterviewSessionPage = () => {
               <textarea
                 value={currentAnswer}
                 onChange={e => setCurrentAnswer(e.target.value)}
-                disabled={isRecording || isTranscribing}
+                disabled={isRecording}
                 placeholder={inputMode === 'voice'
                   ? (isRecording ? 'Recording — click Stop when finished'
-                     : isTranscribing ? 'AI is transcribing your audio…'
+                     : isTranscribing ? 'Transcribing… you can start typing here while you wait.'
                      : 'Click Record Answer, speak, then click Stop. You can edit the text too.')
                   : 'Type your answer here…'}
                 rows={6}
                 className={`w-full p-4 border rounded-xl resize-none text-gray-800 placeholder-gray-400 transition-all ${
                   isRecording ? 'border-red-300 bg-red-50 cursor-not-allowed'
-                  : isTranscribing ? 'border-blue-300 bg-blue-50 cursor-wait'
+                  : isTranscribing ? 'border-blue-200 bg-blue-50/30'
                   : 'border-gray-300 focus:border-primary focus:ring-1 focus:ring-primary'
                 }`}
               />
@@ -624,7 +705,7 @@ export const InterviewSessionPage = () => {
                     className="flex items-center gap-1.5 px-4 py-2 text-gray-500 hover:text-gray-700 text-sm font-medium transition">
                     <SkipForward className="w-4 h-4" /> Skip
                   </button>
-                  <button onClick={handleNextQuestion} disabled={isRecording || isTranscribing}
+                  <button onClick={handleNextQuestion} disabled={isRecording}
                     className="px-6 py-3 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl shadow-button flex items-center gap-2 transition-all disabled:opacity-50">
                     {currentIdx + 1 >= questions.length
                       ? <><CheckCircle className="w-5 h-5" /> Review Answers</>

@@ -47,6 +47,10 @@ export const AIInterviewLanding = () => {
     navigate('/ai-interview-summary', { state: { interviewType: selectedType, skipResume: true, inputMode } });
   };
 
+  const handleLiveInterview = () => {
+    navigate('/ai-interview-live', { state: { interviewType: selectedType } });
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
@@ -73,18 +77,18 @@ export const AIInterviewLanding = () => {
                   Receive real-time AI feedback to improve your skills.
                 </p>
                 
-                {/* Answer Mode Toggle */}
+                {/* Answer Mode Toggle — Text Mode hidden for now (backend still supports it) */}
                 <div className="mb-6">
-                  <p className="text-sm font-semibold text-gray-600 mb-3">Choose Answer Mode</p>
+                  <p className="text-sm font-semibold text-gray-600 mb-3">Answer Mode</p>
                   <div className="flex gap-3">
-                    <button onClick={() => setInputMode('voice')}
-                      className={`flex-1 flex flex-col items-center gap-1 px-4 py-3 rounded-xl border-2 font-semibold text-sm transition-all ${
-                        inputMode === 'voice' ? 'border-primary bg-primary-light text-primary' : 'border-gray-200 text-gray-500 hover:border-gray-300'
-                      }`}>
+                    <div
+                      className="flex-1 flex flex-col items-center gap-1 px-4 py-3 rounded-xl border-2 border-primary bg-primary-light text-primary font-semibold text-sm"
+                    >
                       <span className="text-xl">🎤</span>
                       <span>Voice Mode</span>
                       <span className="text-xs font-normal opacity-60">Record answers with mic</span>
-                    </button>
+                    </div>
+                    {/* Text Mode option hidden — uncomment to restore
                     <button onClick={() => setInputMode('text')}
                       className={`flex-1 flex flex-col items-center gap-1 px-4 py-3 rounded-xl border-2 font-semibold text-sm transition-all ${
                         inputMode === 'text' ? 'border-primary bg-primary-light text-primary' : 'border-gray-200 text-gray-500 hover:border-gray-300'
@@ -93,12 +97,13 @@ export const AIInterviewLanding = () => {
                       <span>Text Mode</span>
                       <span className="text-xs font-normal opacity-60">Type answers directly</span>
                     </button>
+                    */}
                   </div>
-                  {inputMode === 'voice' && <p className="text-xs text-green-600 mt-2">✓ Google Cloud AI transcription — accurate Indian English</p>}
+                  <p className="text-xs text-green-600 mt-2">✓ Google Cloud AI transcription — accurate Indian English</p>
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
+                <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start flex-wrap">
                   <button
                     onClick={handleUploadResume}
                     className="flex items-center justify-center gap-3 px-8 py-4 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl shadow-button transition-all"

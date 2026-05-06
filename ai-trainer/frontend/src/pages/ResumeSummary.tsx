@@ -35,13 +35,24 @@ export const ResumeSummary = () => {
   });
 
   const handleStartInterview = () => {
-    navigate('/ai-interview-session', {
-      state: {
-        resume: skipResume ? null : resume,
-        config,
-        inputMode,
-      }
-    });
+    if (config.useVoice) {
+      // Live conversational interview mode
+      navigate('/ai-interview-live', {
+        state: {
+          resumeId: skipResume ? null : resume?.id,
+          interviewType: config.interviewType,
+          numQuestions: config.numQuestions,
+        }
+      });
+    } else {
+      navigate('/ai-interview-session', {
+        state: {
+          resume: skipResume ? null : resume,
+          config,
+          inputMode,
+        }
+      });
+    }
   };
 
   return (
@@ -250,14 +261,17 @@ export const ResumeSummary = () => {
                     <span className="text-sm text-gray-700">Enable Time Pressure</span>
                   </label>
                   
-                  <label className="flex items-center gap-3 cursor-pointer">
+                  <label className="flex items-start gap-3 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={config.useVoice}
                       onChange={(e) => setConfig({ ...config, useVoice: e.target.checked })}
-                      className="w-5 h-5 rounded accent-primary"
+                      className="w-5 h-5 rounded accent-primary mt-0.5"
                     />
-                    <span className="text-sm text-gray-700">Use Voice Responses</span>
+                    <div>
+                      <span className="text-sm font-semibold text-gray-700">🎙 Use Live Voice Responses</span>
+                      <p className="text-xs text-gray-400 mt-0.5">5-min conversational AI interview with voice</p>
+                    </div>
                   </label>
                 </div>
 

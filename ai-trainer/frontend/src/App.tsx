@@ -11,6 +11,7 @@ import { ResumeSummary } from './pages/ResumeSummary';
 import { InterviewSessionPage } from './pages/InterviewSession';
 import { InterviewFeedback } from './pages/InterviewFeedback';
 import { InterviewHistory } from './pages/InterviewHistory';
+import { LiveInterviewSession } from './pages/LiveInterviewSession';
 
 // Learning Pages
 import { Learning } from './pages/Learning';
@@ -51,6 +52,11 @@ function App() {
         <Route path="/ai-interview-session" element={
           <ProtectedRoute>
             <InterviewSessionPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/ai-interview-live" element={
+          <ProtectedRoute>
+            <LiveInterviewSession />
           </ProtectedRoute>
         } />
         <Route path="/ai-interview-feedback" element={

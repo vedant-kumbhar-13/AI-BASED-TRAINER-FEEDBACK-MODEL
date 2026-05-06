@@ -39,7 +39,7 @@ def _get_api_keys() -> list:
     else:
         candidates = [k.strip() for k in str(keys_raw).split(",") if k.strip()]
 
-    valid = [k for k in candidates if k.startswith("AIzaSy")]
+    valid = [k for k in candidates if k.startswith("AIzaSy") or k.startswith("AQ.")]
     if not valid:
         raise ValueError(
             "No valid GEMINI_API_KEY found. Keys must start with 'AIzaSy'. "
@@ -100,8 +100,66 @@ def _call_gemini(prompt: str, system: str, max_output_tokens: int, temperature: 
     )
 
 
+def _repair_truncated_json(raw: str) -> str:
+    """
+    Attempt to repair JSON that was truncated mid-output by Gemini.
+    Closes unclosed strings, arrays, and objects.
+    """
+    # If it already parses, return as-is
+    try:
+        json.loads(raw)
+        return raw
+    except json.JSONDecodeError:
+        pass
+
+    # Step 1: Close any unclosed string
+    in_string = False
+    escape = False
+    for ch in raw:
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+    if in_string:
+        raw += '"'
+
+    # Step 2: Remove any trailing comma or incomplete key-value
+    raw = re.sub(r',\s*$', '', raw.rstrip())
+
+    # Step 3: Close unclosed brackets/braces
+    stack = []
+    in_str = False
+    esc = False
+    for ch in raw:
+        if esc:
+            esc = False
+            continue
+        if ch == '\\':
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in ('{', '['):
+            stack.append('}' if ch == '{' else ']')
+        elif ch in ('}', ']'):
+            if stack:
+                stack.pop()
+
+    # Close all unclosed brackets in reverse order
+    raw += ''.join(reversed(stack))
+
+    return raw
+
+
 def _parse_json(raw: str, context: str = "") -> any:
-    """Strip markdown fences and parse JSON. Raises ValueError on failure."""
+    """Strip markdown fences and parse JSON. Attempts repair if truncated."""
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     raw = re.sub(r"\s*```$", "", raw)
     raw = raw.strip()
@@ -116,6 +174,14 @@ def _parse_json(raw: str, context: str = "") -> any:
 
     try:
         return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt automatic repair of truncated JSON
+    repaired = _repair_truncated_json(raw)
+    try:
+        logger.warning(f"JSON repair succeeded for {context}")
+        return json.loads(repaired)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"Gemini returned invalid JSON{' for ' + context if context else ''}. "
@@ -328,7 +394,7 @@ Return ONLY this exact JSON structure — no prose, no markdown:
         "Return ONLY valid JSON. No preamble. Scores must be floats 0.0-10.0."
     )
 
-    raw = _call_gemini(prompt, system, max_output_tokens=4096, temperature=0.2)
+    raw = _call_gemini(prompt, system, max_output_tokens=8192, temperature=0.2)
     data = _parse_json(raw, context="interview evaluation")
 
     # ── Compute ALL aggregate scores in Python ─────────────────────────────
@@ -413,3 +479,145 @@ Return ONLY this exact JSON structure — no prose, no markdown:
         },
         "question_results": normalised_results,
     }
+
+
+# ---------------------------------------------------------------------------
+# FUNCTION 3: generate_live_question — conversational follow-up
+# ---------------------------------------------------------------------------
+
+def generate_live_question(
+    resume_context: str,
+    conversation_history: list,
+    interview_type: str = "Mixed",
+    question_number: int = 1,
+    total_questions: int = 8,
+) -> dict:
+    """
+    Generate the NEXT interview question based on full conversation history.
+    Returns dict: {"question_text": str, "category": str}
+    """
+    convo_lines = []
+    for entry in conversation_history:
+        role = entry.get("role", "unknown")
+        text = entry.get("text", "")
+        if role == "interviewer":
+            convo_lines.append(f"I: {text}")
+        else:
+            convo_lines.append(f"C: {text}")
+
+    convo_text = "\n".join(convo_lines[-10:]) if convo_lines else "(First question — ask a warm intro.)"
+
+    prompt = f"""You are conducting a live voice interview. Interview type: {interview_type}. This is question {question_number} of {total_questions}.
+
+CANDIDATE RESUME:
+{resume_context[:1200]}
+
+CONVERSATION SO FAR:
+{convo_text}
+
+Generate your NEXT response. It MUST:
+1. Start with a very brief, natural conversational acknowledgment of the candidate's last answer (e.g., "That makes sense.", "Got it.", "I understand. Let's move on."). If the candidate asked to skip, acknowledge it (e.g., "Sure, let's skip that.").
+2. Follow up with exactly ONE new question related to their resume or experience.
+3. Be a COMPLETE sentence ending with a question mark.
+4. Be conversational, natural, and brief (15-30 words total).
+
+Return ONLY this JSON object:
+{{"question_text": "your brief transition, followed by your complete question here?", "category": "{interview_type.lower() if interview_type != 'Mixed' else 'technical'}"}}"""
+
+    system = "Return ONLY valid JSON. The question_text MUST be a complete sentence ending with '?'. No markdown."
+
+    import re as _re
+
+    def _clean_question(text: str) -> str:
+        """Ensure question ends with '?' — Gemini often omits it."""
+        text = text.strip().rstrip('.,;:!')
+        if not text.endswith('?'):
+            text += '?'
+        return text
+
+    def _is_complete(text: str) -> bool:
+        """Reject questions that look truncated mid-sentence."""
+        text = text.strip()
+        if len(text) < 15:
+            return False
+        # Truncated questions often end with prepositions, articles, or conjunctions
+        truncation_endings = [
+            ' the', ' a', ' an', ' of', ' in', ' to', ' for', ' with',
+            ' and', ' or', ' but', ' that', ' which', ' how', ' what',
+            ' your', ' you', ' do', ' is', ' are', ' was', ' were',
+            ' have', ' has', ' can', ' will', ' would', ' should',
+            ' at', ' on', ' by', ' from', ' into', ' about',
+        ]
+        # Check the text WITHOUT the auto-appended '?'
+        raw = text.rstrip('?').strip().lower()
+        for ending in truncation_endings:
+            if raw.endswith(ending):
+                return False
+        return True
+
+    for attempt in range(3):
+        raw = _call_gemini(prompt, system, max_output_tokens=1024, temperature=0.7)
+        cleaned = raw.strip()
+
+        # Try regex extraction first — most reliable
+        q_match = _re.search(r'"question_text"\s*:\s*"([^"]{12,})"', cleaned)
+        cat_match = _re.search(r'"category"\s*:\s*"([^"]+)"', cleaned)
+        if q_match:
+            q_text = _clean_question(q_match.group(1))
+            cat = cat_match.group(1).strip().lower() if cat_match else "general"
+            if _is_complete(q_text):
+                return {"question_text": q_text, "category": cat}
+
+        # Fallback: try full JSON parse
+        try:
+            # Try to close truncated JSON
+            if not cleaned.endswith("}"):
+                cleaned = cleaned.rstrip(',') + '"}'
+            data = _parse_json(cleaned, context="live question generation")
+            if isinstance(data, dict) and data.get("question_text"):
+                q = _clean_question(str(data["question_text"]))
+                if _is_complete(q):
+                    return {
+                        "question_text": q,
+                        "category": str(data.get("category", "general")).strip().lower(),
+                    }
+        except ValueError:
+            pass
+
+        if attempt < 2:
+            logger.warning(f"Live Q gen attempt {attempt+1} failed (raw={cleaned[:200]}), retrying")
+            if attempt == 0:
+                # Retry with a simpler, more direct prompt
+                prompt = f"Ask ONE complete interview question about these skills: {resume_context[:400]}. The question MUST be a full sentence ending with a question mark. Return ONLY: {{\"question_text\":\"your complete question here?\",\"category\":\"technical\"}}"
+            else:
+                # Third attempt — very simple
+                prompt = f"Generate a single {interview_type} interview question. Return JSON: {{\"question_text\":\"complete question?\",\"category\":\"general\"}}"
+            continue
+
+    # Ultimate fallback — never crash the interview
+    fallbacks = [
+        "Can you walk me through your most challenging project?",
+        "What technical skills do you consider your strongest?",
+        "Tell me about a time you solved a difficult problem at work?",
+        "What motivates you to pursue this career path?",
+        "How do you approach learning new technologies?",
+    ]
+    import random
+    return {
+        "question_text": random.choice(fallbacks),
+        "category": "behavioral",
+    }
+
+
+# ---------------------------------------------------------------------------
+# FUNCTION 4: evaluate_live_interview — holistic eval for live mode
+# ---------------------------------------------------------------------------
+
+def evaluate_live_interview(transcript_pairs: list) -> dict:
+    """
+    Evaluate a live interview transcript. Accepts list of dicts:
+    [{"questionText": str, "answerText": str, "questionType": str}, ...]
+
+    Returns the same structure as evaluate_interview().
+    """
+    return evaluate_interview(transcript_pairs)

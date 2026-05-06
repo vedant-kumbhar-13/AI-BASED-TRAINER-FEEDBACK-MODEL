@@ -37,5 +37,10 @@ urlpatterns = [
     path('report/<uuid:session_id>/', views.download_report, name='download-report'),
     path("transcribe/", views.transcribe_audio, name="transcribe-audio"),
     path("tts/", views.synthesize_speech, name="synthesize-speech"),
+
+    # Live conversational interview mode
+    path("live/start/", views.live_start_interview, name="live-start"),
+    path("live/chat/", views.live_chat, name="live-chat"),
+    path("live/submit-all/", views.live_submit_all, name="live-submit-all"),
 ]
 
