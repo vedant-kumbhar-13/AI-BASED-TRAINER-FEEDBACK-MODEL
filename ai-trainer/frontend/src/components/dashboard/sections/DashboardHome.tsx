@@ -39,7 +39,8 @@ const CATEGORY_INFO: Record<string, { label: string; icon: string; color: string
 export const DashboardHome = () => {
   const [username, setUsername] = useState<string>('User');
   const [stats, setStats] = useState<InterviewStats | null>(null);
-  const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
+  const [allChartData, setAllChartData] = useState<ChartDataPoint[]>([]);
+  const [chartView, setChartView] = useState<'recent' | 'all'>('recent');
 
   useEffect(() => {
     // Get username from AuthService
@@ -49,7 +50,7 @@ export const DashboardHome = () => {
       setUsername(displayName);
     }
 
-    // Fetch interview stats and history
+    // Fetch interview stats and full history
     const fetchData = async () => {
       try {
         const statsResult = await InterviewAPI.getStats();
@@ -57,7 +58,8 @@ export const DashboardHome = () => {
           setStats(statsResult.stats);
         }
 
-        const historyResult = await InterviewAPI.getHistory({ page_size: 12, status: 'completed' });
+        // Fetch up to 100 to cover all-time view
+        const historyResult = await InterviewAPI.getHistory({ page_size: 100, status: 'completed' });
         if (historyResult.success && historyResult.results) {
           const transformedData: ChartDataPoint[] = historyResult.results
             .filter((item: any) => item.overall_score !== null)
@@ -70,7 +72,7 @@ export const DashboardHome = () => {
                 type: item.interview_type
               };
             });
-          setChartData(transformedData);
+          setAllChartData(transformedData);
         }
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
@@ -79,6 +81,9 @@ export const DashboardHome = () => {
 
     fetchData();
   }, []);
+
+  // Derive displayed data from toggle
+  const chartData = chartView === 'recent' ? allChartData.slice(-12) : allChartData;
 
   // Calculate chart metrics
   const hasInterviewData = chartData.length > 0;
@@ -126,13 +131,44 @@ export const DashboardHome = () => {
         <div className="grid grid-cols-1 gap-6">
           {/* Chart Card */}
           <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-card">
-            <div className="mb-4 pb-4 border-b border-gray-200">
-              <h3 className="text-lg font-bold text-gray-800 mb-1">Your Interview Score Trend</h3>
-              <p className="text-xs text-gray-400">
-                {hasInterviewData 
-                  ? `Last ${chartData.length} attempts • Monthly view`
-                  : 'No interview data yet'}
-              </p>
+            <div className="mb-4 pb-4 border-b border-gray-200 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 mb-1">Your Interview Score Trend</h3>
+                <p className="text-xs text-gray-400">
+                  {hasInterviewData
+                    ? chartView === 'recent'
+                      ? `Last ${chartData.length} attempts`
+                      : `All ${chartData.length} attempts`
+                    : 'No interview data yet'}
+                </p>
+              </div>
+              {/* Toggle pill */}
+              {allChartData.length > 0 && (
+                <div className="flex items-center bg-gray-100 rounded-full p-1 shrink-0">
+                  <button
+                    id="chart-toggle-recent"
+                    onClick={() => setChartView('recent')}
+                    className={`px-3 py-1 text-xs font-semibold rounded-full transition-all ${
+                      chartView === 'recent'
+                        ? 'bg-white text-primary shadow-sm'
+                        : 'text-gray-400 hover:text-gray-600'
+                    }`}
+                  >
+                    Last 12
+                  </button>
+                  <button
+                    id="chart-toggle-all"
+                    onClick={() => setChartView('all')}
+                    className={`px-3 py-1 text-xs font-semibold rounded-full transition-all ${
+                      chartView === 'all'
+                        ? 'bg-white text-primary shadow-sm'
+                        : 'text-gray-400 hover:text-gray-600'
+                    }`}
+                  >
+                    All Time
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="h-72">
@@ -263,7 +299,7 @@ const AptitudePerformanceSection = () => {
   const quizTopics = TOPICS.filter(t => t.hasQuiz);
   const totalTopics = quizTopics.length;
   const completedTopics = quizTopics.filter(t => progress[t.id]?.completed).length;
-  
+
   // Calculate overall stats from real progress
   const scores = quizTopics
     .filter(t => progress[t.id]?.completed)
@@ -272,20 +308,7 @@ const AptitudePerformanceSection = () => {
   const bestScore = scores.length > 0 ? Math.max(...scores) : 0;
   const totalAttempts = quizTopics.reduce((sum, t) => sum + (progress[t.id]?.attempts || 0), 0);
 
-  // Group topics by category
-  const grouped = quizTopics.reduce<Record<string, typeof quizTopics>>((acc, t) => {
-    const cat = t.category || 'other';
-    if (!acc[cat]) acc[cat] = [];
-    acc[cat].push(t);
-    return acc;
-  }, {});
 
-  const levelColors: Record<string, string> = {
-    Beginner: 'bg-green-100 text-green-700',
-    Intermediate: 'bg-yellow-100 text-yellow-700',
-    Advanced: 'bg-red-100 text-red-700',
-    Hard: 'bg-red-100 text-red-700'
-  };
 
   return (
     <div className="pt-8">
@@ -314,76 +337,7 @@ const AptitudePerformanceSection = () => {
         </div>
       </div>
 
-      {/* Category-grouped Topic Cards */}
-      {Object.entries(grouped).map(([catKey, catTopics]) => {
-        const catInfo = CATEGORY_INFO[catKey] || { label: catKey, icon: '📘', color: 'text-gray-600' };
-        const catCompleted = catTopics.filter(t => progress[t.id]?.completed).length;
-        
-        return (
-          <div key={catKey} className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-lg">{catInfo.icon}</span>
-              <h3 className={`text-sm font-bold ${catInfo.color}`}>
-                {catInfo.label}
-              </h3>
-              <span className="text-xs text-gray-400 ml-auto">
-                {catCompleted}/{catTopics.length} completed
-              </span>
-            </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {catTopics.map((topic) => {
-                const topicProgress = progress[topic.id] || null;
-
-                return (
-                  <Link
-                    key={topic.id}
-                    to={`/quiz/${topic.id}`}
-                    className="bg-white border border-gray-200 rounded-lg p-3 hover:shadow-card-hover transition-all text-center group"
-                  >
-                    <span className="text-2xl block mb-1">{topic.icon}</span>
-                    <h4 className="text-xs font-bold text-gray-800 mb-1 line-clamp-2 group-hover:text-primary transition">
-                      {topic.name}
-                    </h4>
-                    <span className={`inline-block px-2 py-0.5 text-[10px] rounded-full mb-1 ${levelColors[topic.level]}`}>
-                      {topic.level}
-                    </span>
-                    
-                    {topicProgress ? (
-                      <div className="mt-1 pt-1 border-t border-gray-100">
-                        <p className="text-base font-bold text-primary">{topicProgress.bestScore}%</p>
-                        <p className="text-[10px] text-gray-400">{topicProgress.attempts} attempt{topicProgress.attempts !== 1 ? 's' : ''}</p>
-                      </div>
-                    ) : (
-                      <div className="mt-1 pt-1 border-t border-gray-100">
-                        <p className="text-xs text-gray-400">Not started</p>
-                      </div>
-                    )}
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-
-      {/* Action Buttons */}
-      <div className="flex flex-wrap gap-4 mt-4">
-        <Link
-          to="/learning"
-          className="px-6 py-3 bg-primary hover:bg-primary-dark text-white font-bold text-sm rounded-lg shadow-button transition"
-        >
-          📚 Continue Learning
-        </Link>
-        {completedTopics > 0 && (
-          <Link
-            to="/learning"
-            className="px-6 py-3 border-2 border-primary text-primary hover:bg-primary-light font-bold text-sm rounded-lg transition"
-          >
-            📊 View All Progress
-          </Link>
-        )}
-      </div>
     </div>
   );
 };

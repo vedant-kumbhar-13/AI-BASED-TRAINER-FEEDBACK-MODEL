@@ -68,6 +68,7 @@ export const LiveInterviewSession = () => {
   const silenceStreamRef = useRef<MediaStream | null>(null);
   const silenceRafRef = useRef<number>(0);
   const silenceActiveRef = useRef(false);
+  const finalizeCalledRef = useRef(false); // M7 fix: prevent double finalizeAnswer calls
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => { currentQRef.current = currentQ; }, [currentQ]);
@@ -210,14 +211,12 @@ export const LiveInterviewSession = () => {
         if (!isCalibrated) {
           baselineSamples.push(energy);
           if (Date.now() - calibrationStart >= CALIBRATION_MS) {
-            // Calculate baseline: mean + 2x standard deviation of noise
-            const mean = baselineSamples.reduce((a, b) => a + b, 0) / baselineSamples.length;
-            const variance = baselineSamples.reduce((a, b) => a + (b - mean) ** 2, 0) / baselineSamples.length;
-            const stdDev = Math.sqrt(variance);
-            // Threshold = baseline mean + 2 std deviations, minimum 8
-            dynamicThreshold = Math.max(8, mean + stdDev * 2);
+            // I5 fix: use median-based threshold instead of mean+2σ (resistant to outliers)
+            const sorted = [...baselineSamples].sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+            dynamicThreshold = Math.max(8, median * 2.5);
             isCalibrated = true;
-            console.log(`[VAD] Calibrated: baseline=${mean.toFixed(1)}, stdDev=${stdDev.toFixed(1)}, threshold=${dynamicThreshold.toFixed(1)}`);
+            console.log(`[VAD] Calibrated: median=${median.toFixed(1)}, threshold=${dynamicThreshold.toFixed(1)}`);
           }
           silenceRafRef.current = requestAnimationFrame(check);
           return;
@@ -256,6 +255,7 @@ export const LiveInterviewSession = () => {
     try { silenceStreamRef.current?.getTracks().forEach(t => t.stop()); } catch { /* already stopped */ }
     silenceStreamRef.current = null;
 
+    setTranscriptText(''); // I7 fix: clear transcript immediately before async STT
     return new Promise(async (resolve) => {
       const rec = mediaRecRef.current;
       if (!rec || rec.state === 'inactive') { resolve(''); return; }
@@ -322,6 +322,7 @@ export const LiveInterviewSession = () => {
   const askQuestion = useCallback(async (q: Question) => {
     setCurrentQ(q);
     setTranscriptText('');
+    finalizeCalledRef.current = false; // M7 fix: reset for new question
     setChatLog(prev => [...prev, { role: 'interviewer', text: q.question_text, qNum: q.question_number }]);
     setPhase('speaking');
     stopSpeaking();
@@ -336,6 +337,9 @@ export const LiveInterviewSession = () => {
 
   const finalizeAnswer = useCallback(async () => {
     if (phaseRef.current !== 'recording') return;
+    // M7 fix: synchronous guard to prevent double RAF trigger
+    if (finalizeCalledRef.current) return;
+    finalizeCalledRef.current = true;
     setPhase('processing');
     const answerText = await stopRecording() || '[No answer provided]';
     const q = currentQRef.current!;

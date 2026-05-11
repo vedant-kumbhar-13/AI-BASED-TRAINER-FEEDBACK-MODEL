@@ -93,24 +93,29 @@ export const Quiz = () => {
 
     let correctCount = 0;
     let score = 0;
+    let apiResults: any[] = [];
 
     if (usingAPI) {
-      // Submit to backend — it returns correct answers and score
+      // Submit to backend — include ALL question IDs, null for unanswered
+      // so backend returns correctAnswer for every question
+      const fullAnswers = Object.fromEntries(
+        questions.map(q => [q.id, answers[q.id] ?? null])
+      );
       try {
         const res = await fetch(`${API_BASE}/aptitude/submit/`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ answers }),
+          body: JSON.stringify({ answers: fullAnswers }),
         });
         if (res.ok) {
           const data = await res.json();
           score = data.score;
           correctCount = data.correctCount;
+          apiResults = data.results || [];
         } else {
           throw new Error('Submit failed');
         }
       } catch {
-        // Fallback: can't determine correct answers from API questions
         score = 0;
         correctCount = 0;
       }
@@ -136,7 +141,9 @@ export const Quiz = () => {
         score,
         correctCount,
         totalQuestions: questions.length,
-        quizQuestionIds: questions.map(q => q.id)
+        quizQuestionIds: questions.map(q => q.id),
+        questions,       // ← pass full question objects (with text + options)
+        apiResults,      // ← pass per-question correctAnswer from backend
       }
     });
   }, [answers, questions, topicId, navigate, isSubmitting, usingAPI]);

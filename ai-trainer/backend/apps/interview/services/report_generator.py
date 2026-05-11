@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate, Paragraph,
     Spacer, Table, TableStyle, HRFlowable, KeepTogether,
+    Image as RLImage,
 )
 from reportlab.platypus import PageBreak
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
@@ -70,45 +72,105 @@ def _placement_label(key: str) -> str:
     }.get(key, key.replace("_", " ").title())
 
 
+# ── College header image path ──────────────────────────────────────────────
+HEADER_IMG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "static", "images", "college_header.jpeg",
+)
+
+# Height of the header image area (in points)
+_HEADER_IMG_H = 28 * mm
+_FOOTER_H = 16 * mm
+
+
 # ── Page template with header/footer callback ──────────────────────────────
 
 def _make_doc(buf: io.BytesIO, title: str) -> BaseDocTemplate:
     W, H = A4
     margin = 18 * mm
 
+    header_path = os.path.normpath(HEADER_IMG_PATH)
+
     def _header_footer(canvas, doc):
         canvas.saveState()
-        # ── Header bar ──
+
+        # ── Header: college header image ──
+        if os.path.isfile(header_path):
+            # Draw the image stretched to full page width at the top
+            canvas.drawImage(
+                header_path,
+                0, H - _HEADER_IMG_H,
+                width=W,
+                height=_HEADER_IMG_H,
+                preserveAspectRatio=True,
+                anchor="n",
+                mask="auto",
+            )
+            # Thin separator line below the header image
+            canvas.setStrokeColor(BLUE_DARK)
+            canvas.setLineWidth(1)
+            canvas.line(margin, H - _HEADER_IMG_H - 1, W - margin, H - _HEADER_IMG_H - 1)
+        else:
+            # Fallback: painted bar if image is missing
+            canvas.setFillColor(BLUE_DARK)
+            canvas.rect(0, H - 22 * mm, W, 22 * mm, fill=True, stroke=False)
+            canvas.setFont("Helvetica-Bold", 10)
+            canvas.setFillColor(WHITE)
+            canvas.drawCentredString(
+                W / 2, H - 13 * mm,
+                "AI-Based Pre-Placement Trainer & Feedback Model",
+            )
+            canvas.setFont("Helvetica", 7)
+            canvas.drawCentredString(W / 2, H - 18 * mm, "Interview Performance Report")
+
+        # ── Subtitle beneath the header ──
+        canvas.setFont("Helvetica-Bold", 9)
         canvas.setFillColor(BLUE_DARK)
-        canvas.rect(0, H - 22 * mm, W, 22 * mm, fill=True, stroke=False)
-        canvas.setFont("Helvetica-Bold", 10)
-        canvas.setFillColor(WHITE)
-        canvas.drawCentredString(W / 2, H - 13 * mm, "AI-Based Pre-Placement Trainer & Feedback Model")
-        canvas.setFont("Helvetica", 7)
-        canvas.drawCentredString(W / 2, H - 18 * mm, "Interview Performance Report")
+        canvas.drawCentredString(
+            W / 2, H - _HEADER_IMG_H - 10,
+            "AI-Based Pre-Placement Trainer & Feedback Model — Interview Performance Report",
+        )
+
         # ── Footer ──
+        canvas.setStrokeColor(colors.HexColor("#E5E7EB"))
+        canvas.setLineWidth(0.5)
+        canvas.line(margin, _FOOTER_H, W - margin, _FOOTER_H)
+
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(GRAY_MID)
         canvas.drawCentredString(
-            W / 2, 8 * mm,
+            W / 2, _FOOTER_H - 6,
             f"AI Pre-Placement Trainer  |  Page {doc.page}  |  "
             f"Generated {datetime.now().strftime('%d %b %Y')}",
         )
+
+        # ── Copyright notice ──
+        canvas.setFont("Helvetica", 6)
+        canvas.setFillColor(GRAY_MID)
+        canvas.drawCentredString(
+            W / 2, 6 * mm,
+            f"© {datetime.now().year} Vedant Kumbhar, Loukik Ingale, Meeraj Krishna — "
+            "AI-Based Pre-Placement Trainer & Feedback Model. All Rights Reserved.",
+        )
+
         canvas.restoreState()
+
+    top_margin = _HEADER_IMG_H + 14 * mm  # image + subtitle + gap
+    bottom_margin = _FOOTER_H + 4 * mm
 
     doc = BaseDocTemplate(
         buf,
         pagesize=A4,
         title=title,
-        author="AI Trainer",
-        topMargin=26 * mm,
-        bottomMargin=18 * mm,
+        author="AI Trainer — Yashoda Technical Campus",
+        topMargin=top_margin,
+        bottomMargin=bottom_margin,
         leftMargin=margin,
         rightMargin=margin,
     )
     frame = Frame(
-        margin, 18 * mm,
-        W - 2 * margin, H - 44 * mm,
+        margin, bottom_margin,
+        W - 2 * margin, H - top_margin - bottom_margin,
         id="normal",
     )
     doc.addPageTemplates([PageTemplate(id="main", frames=frame, onPage=_header_footer)])

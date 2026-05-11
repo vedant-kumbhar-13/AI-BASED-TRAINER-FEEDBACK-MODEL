@@ -33,7 +33,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "password": "Passwords do not match"
             })
-        
+
+        # M9 fix: enforce minimum password complexity
+        if len(data['password']) < 8:
+            raise serializers.ValidationError({
+                "password": "Password must be at least 8 characters long."
+            })
         if CustomUser.objects.filter(email=data['email']).exists():
             raise serializers.ValidationError({
                 "email": "Email already registered"

@@ -1,0 +1,609 @@
+
+<h2 class="sr-only">Code analysis report: AI Trainer codebase — bugs, exception handling gaps, and improvement suggestions</h2>
+<style>
+  body{margin:0}
+  .wrap{padding:0 0 2rem}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:1.5rem;border-bottom:0.5px solid var(--color-border-tertiary);padding-bottom:12px}
+  .tab{padding:6px 14px;font-size:13px;font-weight:500;border-radius:var(--border-radius-md);cursor:pointer;border:0.5px solid var(--color-border-secondary);background:transparent;color:var(--color-text-secondary);transition:all .15s}
+  .tab.active{background:var(--color-background-primary);color:var(--color-text-primary);border-color:var(--color-border-primary)}
+  .section{display:none}.section.visible{display:block}
+  .card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);margin-bottom:10px;overflow:hidden}
+  .card-head{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;cursor:pointer;user-select:none}
+  .card-head:hover{background:var(--color-background-secondary)}
+  .badge{display:inline-flex;align-items:center;font-size:11px;font-weight:500;padding:3px 8px;border-radius:20px;white-space:nowrap;flex-shrink:0;margin-top:1px}
+  .b-crit{background:#FCEBEB;color:#791F1F}
+  .b-med{background:#FAEEDA;color:#633806}
+  .b-low{background:#EAF3DE;color:#27500A}
+  .b-exc{background:#E6F1FB;color:#0C447C}
+  .b-imp{background:#EEEDFE;color:#3C3489}
+  .card-title{font-size:14px;font-weight:500;color:var(--color-text-primary);flex:1}
+  .card-meta{font-size:12px;color:var(--color-text-secondary);margin-top:3px}
+  .card-body{display:none;padding:0 16px 16px;border-top:0.5px solid var(--color-border-tertiary);margin-top:0}
+  .card-body.open{display:block}
+  .code{font-family:var(--font-mono);font-size:12px;background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:10px 12px;margin:10px 0;overflow-x:auto;white-space:pre;line-height:1.6}
+  .fix{background:#EAF3DE;border:0.5px solid #C0DD97;border-radius:var(--border-radius-md);padding:10px 12px;margin:10px 0;font-size:13px;color:#27500A;line-height:1.6}
+  .fix strong{color:#173404}
+  p{font-size:13px;line-height:1.65;color:var(--color-text-secondary);margin:10px 0}
+  .chevron{font-size:16px;color:var(--color-text-tertiary);transition:transform .15s;flex-shrink:0;margin-top:2px}
+  .card-head.open .chevron{transform:rotate(90deg)}
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:1.5rem}
+  .sum-card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px;text-align:center}
+  .sum-num{font-size:26px;font-weight:500;line-height:1}
+  .sum-lbl{font-size:12px;color:var(--color-text-secondary);margin-top:4px}
+  .s-crit{color:#E24B4A}.s-med{color:#BA7517}.s-low{color:#639922}.s-exc{color:#185FA5}.s-imp{color:#534AB7}
+  .file-tag{font-family:var(--font-mono);font-size:11px;background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:4px;padding:1px 6px;color:var(--color-text-secondary)}
+</style>
+
+<div class="wrap">
+  <div class="summary-grid">
+    <div class="sum-card"><div class="sum-num s-crit">6</div><div class="sum-lbl">Critical bugs</div></div>
+    <div class="sum-card"><div class="sum-num s-med">9</div><div class="sum-lbl">Medium bugs</div></div>
+    <div class="sum-card"><div class="sum-num s-exc">7</div><div class="sum-lbl">Exception gaps</div></div>
+    <div class="sum-card"><div class="sum-num s-imp">8</div><div class="sum-lbl">Improvements</div></div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="show('crit',this)">Critical bugs</button>
+    <button class="tab" onclick="show('med',this)">Medium bugs</button>
+    <button class="tab" onclick="show('exc',this)">Exception handling</button>
+    <button class="tab" onclick="show('imp',this)">Improvements</button>
+  </div>
+
+  <!-- CRITICAL -->
+  <div id="crit" class="section visible">
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-crit">Critical</span>
+        <div><div class="card-title">Transcription overwrites the next question's answer</div>
+        <div class="card-meta"><span class="file-tag">InterviewSession.tsx</span> &nbsp;sendAudioForTranscription / handleNextQuestion</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>sendAudioForTranscription()</code> is fire-and-forget. After the user clicks "Next Question", <code>saveCurrentAnswer()</code> runs immediately. But the cloud STT response arrives 2–5 seconds later and calls <code>setCurrentAnswer(prev => …)</code> — which now patches the <em>new</em> question's answer box, not the old one. The wrong answer gets saved and the user's typed corrections are overwritten.</p>
+        <div class="code">// ❌ current — fire and forget, no question context captured
+recorder.onstop = () => {
+  stream.getTracks().forEach(t => t.stop());
+  sendAudioForTranscription();   // runs async, has no idea which Q we're on
+};</div>
+        <div class="fix"><strong>Fix:</strong> Snapshot <code>currentIdx</code> before the async call and only apply the transcript if the index hasn't changed. Or better: use a <code>questionId</code> ref to guard the state update.<br><br>
+<code>const qIdAtRecordStop = currentQuestion.id;<br>
+// …in sendAudioForTranscription:<br>
+if (currentQuestion?.id === qIdAtRecordStop) setCurrentAnswer(…);</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-crit">Critical</span>
+        <div><div class="card-title">Answer saved before transcription completes</div>
+        <div class="card-meta"><span class="file-tag">InterviewSession.tsx</span> &nbsp;handleNextQuestion → saveCurrentAnswer</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>handleNextQuestion()</code> calls <code>saveCurrentAnswer()</code> synchronously and then advances. Cloud STT takes 2–5 seconds. The answer collected into <code>collectedAnswers[idx]</code> is whatever partial text existed at click time — usually empty or cut short.</p>
+        <div class="code">const handleNextQuestion = () => {
+  stopSpeaking();
+  if (isRecording) stopRecording();
+  saveCurrentAnswer();           // ← transcript not ready yet
+  if (currentIdx + 1 >= questions.length) setPhase('review');
+  else { setCurrentIdx(prev => prev + 1); … }
+};</div>
+        <div class="fix"><strong>Fix:</strong> Disable the "Next Question" button while <code>isTranscribing === true</code>, or wait for transcription to resolve before advancing. The button already has <code>disabled={isRecording}</code> — extend it to <code>disabled={isRecording || isTranscribing}</code> and add a "Transcribing…" label.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-crit">Critical</span>
+        <div><div class="card-title">localStorage session key is not user-scoped</div>
+        <div class="card-meta"><span class="file-tag">InterviewSession.tsx</span> &nbsp;STORAGE_KEY constant</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The backup key is a fixed string <code>'interview_session_backup'</code>. If two users share the same browser (common in labs or family computers), User B logs in and the mount <code>useEffect</code> finds User A's saved session, restores it, and skips <code>startInterview()</code> entirely. User B is now in User A's interview.</p>
+        <div class="code">const STORAGE_KEY = 'interview_session_backup'; // ❌ shared across all users</div>
+        <div class="fix"><strong>Fix:</strong> Append the logged-in user's ID to the key. Read the user ID from <code>AuthService.getUser()?.id</code>:<br><br>
+<code>const userId = AuthService.getUser()?.id ?? 'anon';<br>
+const STORAGE_KEY = `interview_session_backup_${userId}`;</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-crit">Critical</span>
+        <div><div class="card-title">Only ValueError caught in submit_all — unhandled 500s</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/views.py</span> &nbsp;submit_all view</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The evaluation call is wrapped in <code>except ValueError</code> only. Gemini JSON parse errors (<code>json.JSONDecodeError</code>), network timeouts, <code>AttributeError</code> from a bad response shape, or quota errors from key rotation failure all propagate as unhandled Django 500 errors — the user sees a blank error instead of a friendly retry message.</p>
+        <div class="code">try:
+    evaluation = evaluate_interview(answers)
+except ValueError as e:          # ❌ too narrow
+    return Response({'error': 'Interview evaluation failed.'}, status=503)</div>
+        <div class="fix"><strong>Fix:</strong> Catch <code>Exception</code> and log the specific type for debugging:<br><br>
+<code>except Exception as e:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;logger.error("submit_all failed [%s]: %s", type(e).__name__, e)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;return Response({'error': 'Evaluation failed. Please try again.'}, status=503)</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-crit">Critical</span>
+        <div><div class="card-title">Audio file read fully into memory before size check</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/views.py</span> &nbsp;transcribe_audio</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>A malicious user (or broken client) can send a 500 MB audio file. The entire payload is read into a Python <code>bytes</code> object before the 10 MB check runs — it's too late, the RAM spike already happened.</p>
+        <div class="code">audio_bytes = audio_file.read()        # ❌ loads ALL bytes first
+if len(audio_bytes) > MAX_AUDIO_BYTES: # then rejects
+    return Response({"error": "Too large."}, status=400)</div>
+        <div class="fix"><strong>Fix:</strong> Check the file size before reading using the <code>Content-Length</code> header or Django's <code>audio_file.size</code> attribute (set at upload time):<br><br>
+<code>if audio_file.size > MAX_AUDIO_BYTES:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;return Response({"error": "Audio file too large."}, status=400)<br>
+audio_bytes = audio_file.read()</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-crit">Critical</span>
+        <div><div class="card-title">Live mode question_number unvalidated — all questions bypassable</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/views.py</span> &nbsp;live_chat view</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>question_number</code> comes straight from the request body with no bounds check. A client can send <code>"question_number": 999</code> and the view will immediately return <code>next_question: null, is_last: true</code> — completing the interview with zero real answers answered.</p>
+        <div class="code">question_number = int(request.data.get('question_number', 1))  # ❌ no bounds check
+…
+if next_number > total_questions:
+    return Response({'next_question': None, 'is_last': True, …})</div>
+        <div class="fix"><strong>Fix:</strong> Validate the submitted question number against the DB:<br><br>
+<code>actual_answered = InterviewQuestion.objects.filter(session=session).count()<br>
+if question_number > actual_answered + 1:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;return Response({'error': 'Invalid question_number'}, status=400)</code></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- MEDIUM -->
+  <div id="med" class="section">
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">authStore doesn't hydrate from localStorage on page reload</div>
+        <div class="card-meta"><span class="file-tag">store/authStore.ts</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The Zustand store initialises with <code>user: null, token: null</code> on every cold load. Any component reading <code>useAuthStore(s => s.token)</code> gets <code>null</code> after a browser refresh even if the user is still "logged in" (token is in localStorage). Only <code>AuthService.getToken()</code> works on refresh — the store is out of sync.</p>
+        <div class="fix"><strong>Fix:</strong> Hydrate the store from localStorage when it is first created:<br><br>
+<code>const stored = localStorage.getItem('access_token');<br>
+const storedUser = localStorage.getItem('user');<br>
+// pass as initial state to create()<br>
+user: storedUser ? JSON.parse(storedUser) : null,<br>
+token: stored ?? null,</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">Dead method references removed backend endpoint</div>
+        <div class="card-meta"><span class="file-tag">services/interviewAPI.ts</span> &nbsp;submitAnswer()</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>InterviewAPI.submitAnswer()</code> calls <code>/interview/submit-answer/</code> which was explicitly removed from <code>urls.py</code> (there's even a comment in <code>views.py</code> saying "NOTE: submit_answer endpoint has been removed"). Any future developer calling this method will get a 404 with no obvious explanation.</p>
+        <div class="fix"><strong>Fix:</strong> Delete <code>submitAnswer()</code>, <code>endInterview()</code>, and <code>getCurrentQuestion()</code> from <code>interviewAPI.ts</code> — they all reference defunct endpoints. Keep only the methods that match live URLs.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">Question text missing from feedback breakdown</div>
+        <div class="card-meta"><span class="file-tag">pages/InterviewFeedback.tsx</span> &nbsp;questionResults map</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>In the new <code>submit-all</code> flow, the per-question accordion header shows <code>Q{qr.question_index}</code> and <code>qr.strength</code> as the title, but never the actual question text. Users reading their own PDF report or the web feedback cannot remember what the question even was.</p>
+        <div class="fix"><strong>Fix:</strong> Pass the questions array through navigation state (it's already in <code>collectedAnswers[i].questionText</code>) and match by index in the feedback page:<br><br>
+<code>const questionText = evalData?.question_results?.[index]?.questionText<br>
+  ?? collectedAnswers?.[index]?.questionText ?? '';</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">speakText recreated every render — stale useEffect deps</div>
+        <div class="card-meta"><span class="file-tag">pages/InterviewSession.tsx</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>speakText</code> is declared as a plain <code>async function</code> inside the component. A new function reference is created on every render. The <code>useEffect</code> that auto-reads questions on <code>currentIdx</code> change has an ESLint exhaustive-deps warning because <code>speakText</code> is not in the dependency array — but adding it would cause infinite loops because it's a new reference every render.</p>
+        <div class="fix"><strong>Fix:</strong> Wrap <code>speakText</code> with <code>useCallback</code> and its true dependencies (<code>ttsEnabled</code>, <code>inputMode</code>):<br><br>
+<code>const speakText = useCallback(async (text: string) => { … },<br>
+  [ttsEnabled, inputMode]);</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">generate_questions hard-fails on partial Gemini response</div>
+        <div class="card-meta"><span class="file-tag">services/openai_service.py</span> &nbsp;generate_questions</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>If Gemini returns 7 valid questions instead of 8 (a common occurrence with token truncation), the function raises <code>ValueError("Gemini returned 7 valid questions, expected 8")</code>. The entire <code>start_interview</code> view returns 503 and the user cannot start an interview.</p>
+        <div class="code">if len(validated) < num_questions:
+    raise ValueError(f"Gemini returned {len(validated)} …")  # ❌ no recovery</div>
+        <div class="fix"><strong>Fix:</strong> Accept partial results if they meet a minimum threshold, and backfill with fallback questions if needed:<br><br>
+<code>if len(validated) < max(3, num_questions - 2):<br>
+&nbsp;&nbsp;&nbsp;&nbsp;raise ValueError(…)  # only fail if very few returned<br>
+return validated[:num_questions]  # accept 7/8, pad if needed</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">Quiz submit has no auth — scores can't be saved to any user</div>
+        <div class="card-meta"><span class="file-tag">apps/aptitude/views.py</span> &nbsp;submit_quiz</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>@permission_classes([AllowAny])</code> on <code>submit_quiz</code> means anonymous users can submit quiz answers. More importantly, since there's no <code>request.user</code> available, quiz scores can never be saved to a <code>QuizAttempt</code> record. The <code>QuizAttempt</code> model exists in the DB but is never written to.</p>
+        <div class="fix"><strong>Fix:</strong> Change to <code>IsAuthenticated</code> and create the <code>QuizAttempt</code> record on submit:<br><br>
+<code>@permission_classes([IsAuthenticated])<br>
+…<br>
+QuizAttempt.objects.create(<br>
+&nbsp;&nbsp;user=request.user, topic_id=topic_id,<br>
+&nbsp;&nbsp;score=score, answers=answers<br>
+)</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">LiveInterviewSession VAD finalizeAnswer double-call race</div>
+        <div class="card-meta"><span class="file-tag">pages/LiveInterviewSession.tsx</span> &nbsp;startRecording / finalizeAnswer</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The requestAnimationFrame VAD loop checks <code>phaseRef.current !== 'recording'</code> as a guard, but <code>setPhase('processing')</code> is asynchronous — it doesn't update <code>phaseRef.current</code> until the next React commit. A second RAF tick can fire between the first <code>finalizeAnswer()</code> call and the ref update, calling it twice and starting two STT→backend calls for the same question.</p>
+        <div class="fix"><strong>Fix:</strong> Add a local ref flag that is set synchronously before any async work:<br><br>
+<code>const finalizeCalledRef = useRef(false);<br><br>
+const finalizeAnswer = useCallback(async () => {<br>
+&nbsp;&nbsp;if (phaseRef.current !== 'recording') return;<br>
+&nbsp;&nbsp;if (finalizeCalledRef.current) return; // ← add this<br>
+&nbsp;&nbsp;finalizeCalledRef.current = true;      // ← and this<br>
+&nbsp;&nbsp;setPhase('processing');<br>
+&nbsp;&nbsp;…<br>
+}, […]);</code><br><br>
+Reset <code>finalizeCalledRef.current = false</code> at the start of each <code>askQuestion()</code> call.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">download_report reads entire PDF into memory</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/views.py</span> &nbsp;download_report</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The cached PDF is served with <code>HttpResponse(pdf_bytes, …)</code> which reads the entire file into RAM. For a multi-page PDF with charts this can be 2–5 MB per request and spikes RAM for every concurrent download.</p>
+        <div class="fix"><strong>Fix:</strong> Use Django's <code>FileResponse</code> which streams the file in chunks:<br><br>
+<code>from django.http import FileResponse<br>
+return FileResponse(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;evaluation.report_pdf.open('rb'),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;content_type='application/pdf',<br>
+&nbsp;&nbsp;&nbsp;&nbsp;filename=filename, as_attachment=True<br>
+)</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-med">Medium</span>
+        <div><div class="card-title">No password complexity validation on frontend or serializer</div>
+        <div class="card-meta"><span class="file-tag">components/auth/Register.tsx &nbsp;·&nbsp; apps/accounts/serializers.py</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>Frontend only checks <code>password !== confirmPassword</code>. The serializer only checks the same. A user can register with the password <code>"a"</code> — a single character.</p>
+        <div class="fix"><strong>Fix:</strong> Add a minimum 8-character check in <code>Register.tsx</code> submit handler and in the serializer's <code>validate()</code> method:<br><br>
+<code># serializers.py<br>
+if len(data['password']) < 8:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;raise serializers.ValidationError({'password': 'Minimum 8 characters required.'})</code></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- EXCEPTION HANDLING -->
+  <div id="exc" class="section">
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">cloud_stt_service has no retry on transient errors</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/services/cloud_stt_service.py</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The Google Cloud STT call is a single attempt with no retry. A brief 503 or network hiccup from Google surfaces directly as a failed transcription. The user's recorded audio is lost and they must re-record.</p>
+        <div class="fix"><strong>Fix:</strong> Add exponential backoff retry for transient errors (503, 429, network timeout):<br><br>
+<code>import time<br>
+for attempt in range(3):<br>
+&nbsp;&nbsp;&nbsp;&nbsp;try:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;response = client.recognize(request=request)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;break<br>
+&nbsp;&nbsp;&nbsp;&nbsp;except Exception as e:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if attempt == 2: raise<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;time.sleep(0.5 * (2 ** attempt))</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">cloud_tts_service has no fallback voice</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/services/cloud_tts_service.py</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>If <code>en-IN-Chirp3-HD-Aoede</code> is unavailable (quota exhausted, region not available), the service raises immediately with no fallback. The entire <code>/api/interview/tts/</code> endpoint returns 503 and the frontend falls back to browser TTS — but only because of the try/catch in <code>InterviewSession.tsx</code>, not because the backend handles it gracefully.</p>
+        <div class="fix"><strong>Fix:</strong> Try a list of fallback voices in order:<br><br>
+<code>VOICES = ["en-IN-Chirp3-HD-Aoede", "en-IN-Standard-A", "en-US-Standard-B"]<br>
+for voice_name in VOICES:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;try:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return synthesize_speech(text, voice_name)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;except Exception:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;continue<br>
+raise RuntimeError("All TTS voices failed")</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">InterviewFeedback useEffect has no cleanup — setState on unmount</div>
+        <div class="card-meta"><span class="file-tag">pages/InterviewFeedback.tsx</span> &nbsp;fetchFeedback useEffect</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>If the user navigates away from the feedback page while <code>getFeedback()</code> is in-flight, the response eventually arrives and calls <code>setSessionData()</code> and <code>setFeedbackData()</code> on an already-unmounted component — a React warning and potential null-pointer error in strict mode.</p>
+        <div class="fix"><strong>Fix:</strong> Use an AbortController or an isMounted flag:<br><br>
+<code>useEffect(() => {<br>
+&nbsp;&nbsp;let active = true;<br>
+&nbsp;&nbsp;const fetchFeedback = async () => {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;const res = await InterviewAPI.getFeedback(routeSessionId);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;if (!active) return;  // ← guard<br>
+&nbsp;&nbsp;&nbsp;&nbsp;if (res.success) setSessionData(res.data);<br>
+&nbsp;&nbsp;};<br>
+&nbsp;&nbsp;fetchFeedback();<br>
+&nbsp;&nbsp;return () => { active = false; };<br>
+}, [routeSessionId]);</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">settings.py insecure default SECRET_KEY</div>
+        <div class="card-meta"><span class="file-tag">ai_trainer/settings.py</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The default <code>SECRET_KEY</code> is a known hardcoded string published in this repository. If the <code>.env</code> file is missing (e.g., on a new deployment), Django silently runs with this key. Anyone with the source code can forge session cookies and CSRF tokens.</p>
+        <div class="code">SECRET_KEY = config('SECRET_KEY',
+    default='django-insecure-r@jw1!^&#k%)04…')  # ❌ published default</div>
+        <div class="fix"><strong>Fix:</strong> Remove the default entirely so Django refuses to start without a proper key set:<br><br>
+<code>SECRET_KEY = config('SECRET_KEY')  # raises ImproperlyConfigured if missing</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">live_submit_all uses overly broad exception catch</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/views.py</span> &nbsp;live_submit_all</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The evaluation call is wrapped with a generic <code>except Exception</code> that logs but hides the actual error type. A <code>KeyError</code> in score parsing, a DB constraint violation, and a Gemini quota error all produce the same generic "Evaluation failed. Please try again." — impossible to debug from logs alone.</p>
+        <div class="fix"><strong>Fix:</strong> Log the exception type explicitly and differentiate user-facing messages by error category:<br><br>
+<code>except Exception as e:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;logger.error("live_submit_all [%s] session=%s: %s",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;type(e).__name__, session_id, e, exc_info=True)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;msg = 'AI service busy — try again in 30s.' if 'quota' in str(e).lower() \<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;else 'Evaluation failed. Please try again.'<br>
+&nbsp;&nbsp;&nbsp;&nbsp;return Response({'error': msg}, status=503)</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">No AbortController on fetch calls — setState after unmount</div>
+        <div class="card-meta"><span class="file-tag">pages/InterviewSession.tsx</span> &nbsp;startInterview / handleSubmitAll</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>Both <code>startInterview()</code> and <code>handleSubmitAll()</code> are <code>async</code> functions that call <code>apiPost()</code> (which internally uses <code>fetch</code>). If the user navigates away mid-request, the fetch completes and calls <code>setPhase()</code>, <code>setQuestions()</code>, etc. on a dead component.</p>
+        <div class="fix"><strong>Fix:</strong> Use an AbortController per async operation, stored in a ref, and abort it in the cleanup returned by <code>useEffect</code> or via a component-level <code>unmounting</code> ref check.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-exc">Exception gap</span>
+        <div><div class="card-title">aptitude submit_quiz doesn't validate cross-topic question IDs</div>
+        <div class="card-meta"><span class="file-tag">apps/aptitude/views.py</span> &nbsp;submit_quiz</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The submit endpoint accepts an arbitrary dict of <code>{question_id: answer}</code>. There is no check that all question IDs belong to the same topic, or even that they belong to the user's current quiz session. A crafted request can mix questions from different topics to inflate scores.</p>
+        <div class="fix"><strong>Fix:</strong> Accept a <code>topic_id</code> in the request body and validate that all submitted question IDs belong to that topic:<br><br>
+<code>topic_id = request.data.get('topic_id')<br>
+questions = AptitudeQuestion.objects.filter(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;id__in=question_ids, topic_id=topic_id  # ← enforce topic scope<br>
+)</code></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- IMPROVEMENTS -->
+  <div id="imp" class="section">
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">Duplicate resume context builder — extract to helper</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/views.py</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The exact same 12-line resume context builder (skills_str, exp_str, edu_str, projects_str, raw_excerpt) is copy-pasted verbatim in both <code>live_start_interview</code> and <code>live_chat</code>. A bug fix in one won't automatically fix the other.</p>
+        <div class="fix"><strong>Fix:</strong> Extract to a module-level helper:<br><br>
+<code>def _build_resume_context(resume) -> str:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;if not resume: return "No resume provided."<br>
+&nbsp;&nbsp;&nbsp;&nbsp;…<br>
+&nbsp;&nbsp;&nbsp;&nbsp;return f"Summary: {…}\nSkills: {…}…"</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">Replace window.confirm with a modal dialog</div>
+        <div class="card-meta"><span class="file-tag">pages/InterviewSession.tsx</span> &nbsp;handleExitInterview</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>window.confirm()</code> is a synchronous blocking call. On Chrome for Android it is often suppressed or shown as a tab-level dialog with no customisation. It breaks the visual consistency of the app and pauses all JS execution.</p>
+        <div class="fix"><strong>Fix:</strong> Use a simple in-component state flag to show a styled confirmation modal with two buttons: "Resume Interview" and "Exit and Save".</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">Add rate limiting to expensive AI endpoints</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/urls.py</span> &nbsp;/start/ and /transcribe/</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>/api/interview/start/</code> triggers a Gemini call costing ~$0.01 per request. <code>/api/interview/transcribe/</code> costs real money per second of audio. Both have no rate limiting — a script can drain the API quota in minutes.</p>
+        <div class="fix"><strong>Fix:</strong> Use <code>django-ratelimit</code> to cap per-user usage:<br><br>
+<code>from django_ratelimit.decorators import ratelimit<br><br>
+@ratelimit(key='user', rate='10/h', method='POST', block=True)<br>
+@api_view(['POST'])<br>
+def start_interview(request): …</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">STORAGE_KEY defined inside component — recreated every render</div>
+        <div class="card-meta"><span class="file-tag">pages/InterviewSession.tsx</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>const STORAGE_KEY = 'interview_session_backup'</code> is inside the component function body, so a new string is allocated on every render. It should be a module-level constant (and user-scoped per the critical bug above).</p>
+        <div class="fix"><strong>Fix:</strong> Move it outside the component:<br><br>
+<code>// at module level, before the component<br>
+const getStorageKey = (userId: string | number) =&gt;<br>
+&nbsp;&nbsp;`interview_session_backup_${userId}`;</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">VAD calibration: use median-based threshold instead of mean+2σ</div>
+        <div class="card-meta"><span class="file-tag">pages/LiveInterviewSession.tsx</span> &nbsp;startRecording VAD</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The current calibration uses <code>mean + stdDev * 2</code>. A single loud noise during the 1.2s calibration window (a cough, a door slam) inflates the mean and pushes the threshold so high that normal speech never clears it — the interview listens forever and never auto-advances.</p>
+        <div class="fix"><strong>Fix:</strong> Use the median of calibration samples instead of the mean — it's resistant to outliers:<br><br>
+<code>const sorted = [...baselineSamples].sort((a,b)=&gt;a-b);<br>
+const median = sorted[Math.floor(sorted.length/2)];<br>
+dynamicThreshold = Math.max(8, median * 2.5);</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">cloud_stt_service endpoint and region should be configurable</div>
+        <div class="card-meta"><span class="file-tag">apps/interview/services/cloud_stt_service.py</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p>The API endpoint <code>us-central1-speech.googleapis.com</code> and the recogniser path <code>us-central1</code> are hardcoded. Deploying to a non-US region (e.g., for GDPR compliance) requires a code change rather than a config change.</p>
+        <div class="fix"><strong>Fix:</strong> Read region from Django settings:<br><br>
+<code>region = getattr(settings, 'GOOGLE_CLOUD_REGION', 'us-central1')<br>
+endpoint = f"{region}-speech.googleapis.com"<br>
+recognizer = f"projects/{project_id}/locations/{region}/recognizers/_"</code></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">inputMode state is dead — text mode button is commented out</div>
+        <div class="card-meta"><span class="file-tag">pages/AIInterviewLanding.tsx</span></div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>const [inputMode, setInputMode] = useState&lt;'voice'|'text'&gt;('voice')</code> exists, but <code>setInputMode</code> is never called (the text-mode button is commented out). The state is declared, passed through navigation, and read in <code>InterviewSession.tsx</code> to show/hide the recording UI — but it can never be anything other than <code>'voice'</code>.</p>
+        <div class="fix"><strong>Fix:</strong> Either restore the text-mode button or remove <code>inputMode</code> state entirely and hardcode <code>'voice'</code> in the session page until the feature is intentionally re-enabled.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head" onclick="tog(this)">
+        <span class="badge b-imp">Improvement</span>
+        <div><div class="card-title">Live mode transcript text not cleared between questions</div>
+        <div class="card-meta"><span class="file-tag">pages/LiveInterviewSession.tsx</span> &nbsp;askQuestion / stopRecording</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="card-body">
+        <p><code>setTranscriptText('')</code> is called synchronously inside <code>askQuestion()</code>. But <code>stopRecording()</code> sets <code>setTranscriptText(txt)</code> asynchronously after the STT response arrives. If the next question's TTS starts fast, the previous answer text can flash on screen under the new question.</p>
+        <div class="fix"><strong>Fix:</strong> Clear the transcript inside <code>stopRecording</code> before the async STT call and only populate it on success:<br><br>
+<code>setTranscriptText(''); // clear immediately<br>
+const data = await fetchTranscription(blob);<br>
+setTranscriptText(data.text || '');</code></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function show(id, btn) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('visible'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('visible');
+  btn.classList.add('active');
+}
+function tog(head) {
+  head.classList.toggle('open');
+  const body = head.nextElementSibling;
+  body.classList.toggle('open');
+}
+</script>

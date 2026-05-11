@@ -20,15 +20,20 @@ export const QuestionCard = ({
   const getOptionStyles = (option: string) => {
     const isSelected = selectedAnswer === option;
     const isCorrect = option === question.correctAnswer;
+    const notAnswered = !selectedAnswer;
 
     if (showResult) {
       if (isCorrect) {
+        // Always highlight the correct answer in green
         return 'bg-green-50 border-green-500 text-green-800';
       }
       if (isSelected && !isCorrect) {
         return 'bg-red-50 border-red-500 text-red-800';
       }
-      return 'bg-gray-50 border-gray-200 text-gray-500';
+      // Unanswered or other wrong options — neutral grey
+      return notAnswered
+        ? 'bg-gray-50 border-gray-200 text-gray-400'
+        : 'bg-gray-50 border-gray-200 text-gray-500';
     }
 
     if (isSelected) {
@@ -88,18 +93,30 @@ export const QuestionCard = ({
       {/* Result Explanation */}
       {showResult && (
         <div className={`mt-6 p-4 rounded-lg ${
-          selectedAnswer === question.correctAnswer 
-            ? 'bg-green-50 border border-green-200' 
-            : 'bg-red-50 border border-red-200'
+          !selectedAnswer
+            ? 'bg-gray-50 border border-gray-200'
+            : selectedAnswer === question.correctAnswer
+              ? 'bg-green-50 border border-green-200'
+              : 'bg-red-50 border border-red-200'
         }`}>
           <p className={`text-sm font-bold ${
-            selectedAnswer === question.correctAnswer ? 'text-green-700' : 'text-red-700'
+            !selectedAnswer
+              ? 'text-gray-500'
+              : selectedAnswer === question.correctAnswer
+                ? 'text-green-700'
+                : 'text-red-700'
           }`}>
-            {selectedAnswer === question.correctAnswer ? '🎉 Correct!' : '❌ Incorrect'}
+            {!selectedAnswer
+              ? '⚪ Not Answered'
+              : selectedAnswer === question.correctAnswer
+                ? '🎉 Correct!'
+                : '❌ Incorrect'}
           </p>
-          <p className="text-sm text-gray-600 mt-1">
-            The correct answer is: <strong>{question.correctAnswer}</strong>
-          </p>
+          {question.correctAnswer && (
+            <p className="text-sm text-gray-600 mt-1">
+              The correct answer is: <strong>{question.correctAnswer}</strong>
+            </p>
+          )}
         </div>
       )}
     </div>

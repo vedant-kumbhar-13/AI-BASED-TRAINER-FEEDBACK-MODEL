@@ -39,10 +39,13 @@ export const InterviewFeedback = () => {
   const [expandedQuestion, setExpandedQuestion] = useState<number | null>(0);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
 
+  // E3 fix: guard setState with active flag to prevent updates after unmount
   useEffect(() => {
+    let active = true;
     const fetchFeedback = async () => {
       if (routeSessionId && !evalData && !sessionData) {
         const res = await InterviewAPI.getFeedback(routeSessionId);
+        if (!active) return; // guard against unmount
         if (res.success && res.data) {
            setSessionData(res.data);
            setFeedbackData(res.data.feedback);
@@ -69,9 +72,10 @@ export const InterviewFeedback = () => {
            }
         }
       }
-      setLoading(false);
+      if (active) setLoading(false);
     };
     fetchFeedback();
+    return () => { active = false; };
   }, [routeSessionId, evalData, sessionData]);
 
   // ── Extract scores — prefer evalData (new flow), fall back to session ──

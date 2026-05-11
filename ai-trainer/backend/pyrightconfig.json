@@ -3,6 +3,7 @@
   "venv": "venv",
   "extraPaths": [
     ".",
+    "apps",
     "venv/Lib/site-packages"
   ],
   "pythonVersion": "3.12",
@@ -10,6 +11,10 @@
   "typeCheckingMode": "basic",
   "reportMissingImports": "none",
   "reportMissingModuleSource": "none",
+  "reportAttributeAccessIssue": "none",
+  "plugins": [
+    "mypy_django_plugin.main"
+  ],
   "exclude": [
     "**/venv/**",
     "**/__pycache__/**",

@@ -59,7 +59,16 @@ export const Navigation = () => {
           </div>
 
           {/* User Profile */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* About / Info Icon */}
+            <Link
+              to="/about"
+              title="About Us"
+              className="p-2 hover:bg-gray-100 rounded-lg transition group"
+            >
+              <InfoIcon />
+            </Link>
+
             {/* User Dropdown */}
             <div className="relative">
               <button
@@ -96,5 +105,21 @@ export const Navigation = () => {
 const ChevronDownIcon = () => (
   <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+  </svg>
+);
+
+const InfoIcon = () => (
+  <svg
+    className="w-5 h-5 text-gray-500 group-hover:text-primary transition-colors"
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"
+    />
   </svg>
 );

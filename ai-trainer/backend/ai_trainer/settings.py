@@ -191,6 +191,8 @@ if GOOGLE_APPLICATION_CREDENTIALS:
     _os.environ.setdefault('GOOGLE_APPLICATION_CREDENTIALS', GOOGLE_APPLICATION_CREDENTIALS)
 # Project ID for Cloud Speech-to-Text v2 API recognizer path
 GOOGLE_CLOUD_PROJECT = config('GOOGLE_CLOUD_PROJECT', default='')
+# I3 fix: configurable region for Cloud STT/TTS (default: us-central1)
+GOOGLE_CLOUD_REGION = config('GOOGLE_CLOUD_REGION', default='us-central1')
 
 
 # ===========================================

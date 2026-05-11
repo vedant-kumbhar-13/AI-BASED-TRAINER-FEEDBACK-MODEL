@@ -180,78 +180,9 @@ class InterviewAPI {
     }
   }
 
-  /**
-   * Get current question for session
-   */
-  static async getCurrentQuestion(sessionId: string): Promise<{ success: boolean; question?: InterviewQuestion; questions_remaining?: number; error?: string }> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/question/${sessionId}/`, {
-        headers: this.getHeaders()
-      });
-
-      const result = await response.json();
-      
-      if (response.ok) {
-        return { success: true, question: result.question, questions_remaining: result.questions_remaining };
-      }
-      return { success: false, error: result.detail || 'Failed to get question' };
-    } catch (error) {
-      return { success: false, error: 'Network error' };
-    }
-  }
-
-  /**
-   * Submit answer and get feedback
-   */
-  static async submitAnswer(params: {
-    session_id: string;
-    question_id: string;
-    answer_text: string;
-    answer_duration_seconds?: number;
-  }): Promise<{ success: boolean; answer?: AnswerFeedback; next_question?: InterviewQuestion; is_last_question?: boolean; error?: string }> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/submit-answer/`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(params)
-      });
-
-      const result = await response.json();
-      
-      if (response.ok) {
-        return { 
-          success: true, 
-          answer: result.answer, 
-          next_question: result.next_question,
-          is_last_question: result.is_last_question 
-        };
-      }
-      return { success: false, error: result.detail || result.error || 'Failed to submit answer' };
-    } catch (error) {
-      return { success: false, error: 'Network error' };
-    }
-  }
-
-  /**
-   * End interview and get final feedback
-   */
-  static async endInterview(sessionId: string): Promise<{ success: boolean; session?: InterviewSession; feedback?: InterviewFeedback; error?: string }> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/end/${sessionId}/`, {
-        method: 'POST',
-        headers: this.getHeaders()
-      });
-
-      const result = await response.json();
-      
-      if (response.ok) {
-        return { success: true, session: result.session, feedback: result.feedback };
-      }
-      return { success: false, error: result.detail || result.error || 'Failed to end interview' };
-    } catch (error) {
-      return { success: false, error: 'Network error' };
-    }
-  }
+  // NOTE: submitAnswer(), endInterview(), getCurrentQuestion() have been removed.
+  // These referenced defunct backend endpoints (/submit-answer/, /end/, /question/).
+  // All answers are now submitted together via submit-all flow.
 
   /**
    * Get detailed feedback for a session

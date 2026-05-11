@@ -20,6 +20,10 @@ import AuthService from '../services/authService';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
+// Module-level helper — user-scoped localStorage key (C3 + I4 fix)
+const getStorageKey = (userId: string | number) =>
+  `interview_session_backup_${userId}`;
+
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Question {
@@ -87,8 +91,9 @@ export const InterviewSessionPage = () => {
   const [isSpeaking,  setIsSpeaking]  = useState(false);
   const [ttsEnabled,  setTtsEnabled]  = useState(true);
 
-  // BUG-09: localStorage key for session persistence
-  const STORAGE_KEY = 'interview_session_backup';
+  // User-scoped localStorage key (C3 fix)
+  const currentUser = AuthService.getUser();
+  const STORAGE_KEY = getStorageKey(currentUser?.id ?? 'anon');
 
   // Cloud STT recording state
   const [isRecording,    setIsRecording]    = useState(false);
@@ -98,6 +103,8 @@ export const InterviewSessionPage = () => {
   const audioChunksRef    = useRef<BlobPart[]>([]);
   const audioPlayerRef    = useRef<HTMLAudioElement | null>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const questionIdAtRecordRef = useRef<string | null>(null); // C1 fix: snapshot question ID at record-stop
+  const navigatingRef = useRef(false); // Bug fix: prevents stale TTS onended from auto-starting recording
   const MAX_RECORDING_SECS = 55; // auto-stop before Cloud STT 60s limit
   // Read input mode from navigation state (set on AIInterviewLanding)
   const inputMode = (location.state?.inputMode as 'voice' | 'text') || 'voice';
@@ -156,7 +163,20 @@ export const InterviewSessionPage = () => {
       };
     }
 
-    // BUG-09: Try restoring from localStorage before starting a fresh interview
+    // If user came from interview setup flow (fresh start), always clear old backup
+    const isFreshStart = !!(location.state?.config || location.state?.resume);
+    if (isFreshStart) {
+      clearSessionBackup();
+      startInterview();
+      return () => {
+        window.speechSynthesis?.cancel();
+        audioPlayerRef.current?.pause();
+        if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+        if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      };
+    }
+
+    // Otherwise try restoring a backup (user resumed by navigating directly)
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
@@ -189,10 +209,11 @@ export const InterviewSessionPage = () => {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
       const recorder = new MediaRecorder(stream, { mimeType });
       audioChunksRef.current = [];
+      // Snapshot the question ID NOW (at recording start) so it's never null for Q1
+      questionIdAtRecordRef.current = currentQuestion?.id ?? null;
       recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
-        // Fire-and-forget — transcription runs in the background
         sendAudioForTranscription();
       };
       mediaRecorderRef.current = recorder;
@@ -204,7 +225,7 @@ export const InterviewSessionPage = () => {
         ? 'Microphone access denied. Allow mic access in browser settings.'
         : 'Could not access microphone.');
     }
-  }, []);
+  }, [currentQuestion]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === 'recording') {
@@ -215,7 +236,7 @@ export const InterviewSessionPage = () => {
 
   const sendAudioForTranscription = useCallback(async () => {
     if (!audioChunksRef.current.length) return;
-    // Non-blocking: show a subtle indicator but DON'T disable the textarea
+    const snapshotQId = questionIdAtRecordRef.current; // C1 fix: capture question context
     setIsTranscribing(true);
     try {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
@@ -229,11 +250,16 @@ export const InterviewSessionPage = () => {
       });
       const data = await res.json();
       if (res.ok && data.text) {
-        setCurrentAnswer(prev => prev.trim() ? `${prev.trim()} ${data.text}` : data.text);
+        // C1 fix: only apply transcript if we're still on the same question
+        if (snapshotQId && questions[currentIdx]?.id !== snapshotQId) {
+          console.warn('[STT] Discarding late transcript — question already changed');
+        } else {
+          setCurrentAnswer(prev => prev.trim() ? `${prev.trim()} ${data.text}` : data.text);
+        }
       } else if (!res.ok) { setError(`Transcription error: ${data.error || 'Unknown error'}`); }
     } catch { setError('Transcription failed. Check connection and try again.'); }
     finally { setIsTranscribing(false); }
-  }, []);
+  }, [questions, currentIdx]);
 
   // ── Auto-read question when it changes ───────────────────────────────────
   useEffect(() => {
@@ -242,8 +268,8 @@ export const InterviewSessionPage = () => {
     }
   }, [currentIdx, phase]);
 
-  // ── TTS (Cloud TTS with browser fallback) ────────────────────────────────
-  const speakText = async (text: string) => {
+  // ── TTS (Cloud TTS with browser fallback) ── M4 fix: wrapped in useCallback
+  const speakText = useCallback(async (text: string) => {
     if (!ttsEnabled || !text) return;
     setIsSpeaking(true);
     try {
@@ -262,8 +288,8 @@ export const InterviewSessionPage = () => {
       audio.onended = () => {
         URL.revokeObjectURL(url);
         setIsSpeaking(false);
-        // Auto-start recording in voice mode after question is read
-        if (inputMode === 'voice') setTimeout(() => startRecording(), 500);
+        // Only auto-start recording if we haven't navigated away from this question
+        if (inputMode === 'voice' && !navigatingRef.current) setTimeout(() => startRecording(), 500);
       };
       audio.onerror = () => { URL.revokeObjectURL(url); setIsSpeaking(false); };
       await audio.play();
@@ -274,12 +300,12 @@ export const InterviewSessionPage = () => {
         window.speechSynthesis.cancel();
         const utt = new SpeechSynthesisUtterance(text);
         utt.rate = 0.9;
-        utt.onend = () => { setIsSpeaking(false); if (inputMode === 'voice') setTimeout(() => startRecording(), 500); };
+        utt.onend = () => { setIsSpeaking(false); if (inputMode === 'voice' && !navigatingRef.current) setTimeout(() => startRecording(), 500); };
         utt.onerror = () => setIsSpeaking(false);
         window.speechSynthesis.speak(utt);
       } else { setIsSpeaking(false); }
     }
-  };
+  }, [ttsEnabled, inputMode, startRecording]);
 
   const stopSpeaking = () => {
     audioPlayerRef.current?.pause();
@@ -330,21 +356,43 @@ export const InterviewSessionPage = () => {
   };
 
   const handleNextQuestion = () => {
+    // Set navigating flag FIRST to block stale TTS onended from auto-starting recording
+    navigatingRef.current = true;
     stopSpeaking();
     if (isRecording) stopRecording();
     saveCurrentAnswer();
     if (currentIdx + 1 >= questions.length) {
+      navigatingRef.current = false;
       setPhase('review');
     } else {
       setCurrentIdx(prev => prev + 1);
       setCurrentAnswer('');
       setTimer(0);
+      // Reset flag after a short delay so the NEXT question's TTS can auto-start recording
+      setTimeout(() => { navigatingRef.current = false; }, 800);
     }
   };
 
+  // C2 fix: confirmation state for exit modal (I2)
+  const [showExitModal, setShowExitModal] = useState(false);
+
 
   const handleSkipQuestion = () => {
-    setCurrentAnswer('[No answer provided]');
+    // Mark as skipped (distinct from '[No answer provided]' for unattempted questions)
+    setCurrentAnswer('[Skipped]');
+    // Save immediately with skipped marker before navigating
+    if (currentQuestion) {
+      setCollectedAnswers(prev => {
+        const updated = [...prev];
+        updated[currentIdx] = {
+          questionId: currentQuestion.id,
+          questionText: currentQuestion.text,
+          questionType: currentQuestion.type,
+          answerText: '[Skipped]',
+        };
+        return updated;
+      });
+    }
     handleNextQuestion();
   };
 
@@ -378,9 +426,7 @@ export const InterviewSessionPage = () => {
   const handleExitInterview = () => {
     stopSpeaking();
     if (isRecording) stopRecording();
-    if (confirm('Are you sure you want to exit? Your progress will be saved and can be resumed.')) {
-      navigate('/ai-interview');
-    }
+    setShowExitModal(true);
   };
 
   const formatTime = (s: number) =>
@@ -448,8 +494,9 @@ export const InterviewSessionPage = () => {
 
   // Review screen — professional layout matching feedback page
   if (phase === 'review') {
-    const answeredCount = collectedAnswers.filter(a => a && a.answerText !== '[No answer provided]').length;
-    const skippedCount = questions.length - answeredCount;
+    const answeredCount = collectedAnswers.filter(a => a && a.answerText !== '[No answer provided]' && a.answerText !== '[Skipped]').length;
+    const skippedCount = collectedAnswers.filter(a => a && a.answerText === '[Skipped]').length;
+    const noResponseCount = questions.length - collectedAnswers.filter(a => !!a).length;
 
     return (
       <div className="min-h-screen bg-gray-50">
@@ -470,9 +517,18 @@ export const InterviewSessionPage = () => {
                 </div>
                 <div className="w-px bg-gray-200" />
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-gray-400">{skippedCount}</p>
+                  <p className="text-2xl font-bold text-orange-400">{skippedCount}</p>
                   <p className="text-xs text-gray-500">Skipped</p>
                 </div>
+                {noResponseCount > 0 && (
+                  <>
+                    <div className="w-px bg-gray-200" />
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-gray-400">{noResponseCount}</p>
+                      <p className="text-xs text-gray-500">No Response</p>
+                    </div>
+                  </>
+                )}
                 <div className="w-px bg-gray-200" />
                 <div className="text-center">
                   <p className="text-2xl font-bold text-primary">{questions.length}</p>
@@ -488,7 +544,7 @@ export const InterviewSessionPage = () => {
               </div>
               {questions.map((q, idx) => {
                 const ans = collectedAnswers[idx];
-                const answered = ans && ans.answerText !== '[No answer provided]';
+                const answered = ans && ans.answerText !== '[No answer provided]' && ans.answerText !== '[Skipped]';
                 const answerPreview = answered
                   ? (ans.answerText.length > 120 ? ans.answerText.slice(0, 120) + '\u2026' : ans.answerText)
                   : null;
@@ -505,8 +561,10 @@ export const InterviewSessionPage = () => {
                               <span className="text-xs font-semibold text-gray-400 uppercase">{q.type}</span>
                               {answered ? (
                                 <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded-full">{'\u2713'} Answered</span>
+                              ) : ans?.answerText === '[Skipped]' ? (
+                                <span className="text-xs font-semibold text-orange-500 bg-orange-50 px-2 py-0.5 rounded-full">{'\u23ED'} Skipped</span>
                               ) : (
-                                <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{'\u2014'} Skipped</span>
+                                <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{'\u2014'} Not answered</span>
                               )}
                             </div>
                             <p className="text-sm font-bold text-gray-800 mb-1">{q.text}</p>
@@ -705,11 +763,13 @@ export const InterviewSessionPage = () => {
                     className="flex items-center gap-1.5 px-4 py-2 text-gray-500 hover:text-gray-700 text-sm font-medium transition">
                     <SkipForward className="w-4 h-4" /> Skip
                   </button>
-                  <button onClick={handleNextQuestion} disabled={isRecording}
+                  <button onClick={handleNextQuestion} disabled={isRecording || isTranscribing}
                     className="px-6 py-3 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl shadow-button flex items-center gap-2 transition-all disabled:opacity-50">
-                    {currentIdx + 1 >= questions.length
-                      ? <><CheckCircle className="w-5 h-5" /> Review Answers</>
-                      : <><ChevronRight className="w-5 h-5" /> Next Question</>}
+                    {isTranscribing
+                      ? <><Loader2 className="w-5 h-5 animate-spin" /> Transcribing…</>
+                      : currentIdx + 1 >= questions.length
+                        ? <><CheckCircle className="w-5 h-5" /> Review Answers</>
+                        : <><ChevronRight className="w-5 h-5" /> Next Question</>}
                   </button>
                 </div>
               </div>
@@ -726,6 +786,32 @@ export const InterviewSessionPage = () => {
           </div>
 
         </div>
+
+          {/* Exit confirmation modal (replaces window.confirm — I2 fix) */}
+          {showExitModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+              <div className="bg-white rounded-2xl border border-gray-200 p-8 max-w-md w-full mx-4 shadow-xl">
+                <h3 className="text-lg font-bold text-gray-800 mb-2">Exit Interview?</h3>
+                <p className="text-gray-500 text-sm mb-6">
+                  Your progress will be saved and can be resumed when you return.
+                </p>
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setShowExitModal(false)}
+                    className="px-5 py-2.5 border-2 border-gray-300 text-gray-600 font-bold rounded-xl hover:border-gray-400 transition"
+                  >
+                    Resume Interview
+                  </button>
+                  <button
+                    onClick={() => { setShowExitModal(false); navigate('/ai-interview'); }}
+                    className="px-5 py-2.5 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition"
+                  >
+                    Exit & Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
       </main>
     </div>
   );

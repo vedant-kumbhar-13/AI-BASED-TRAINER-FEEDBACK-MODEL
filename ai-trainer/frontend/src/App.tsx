@@ -17,6 +17,7 @@ import { LiveInterviewSession } from './pages/LiveInterviewSession';
 import { Learning } from './pages/Learning';
 import { Quiz } from './pages/Quiz';
 import { QuizResults } from './pages/QuizResults';
+import { AboutUs } from './pages/AboutUs';
 
 function App() {
   return (
@@ -89,6 +90,13 @@ function App() {
         <Route path="/quiz-results/:topicId" element={
           <ProtectedRoute>
             <QuizResults />
+          </ProtectedRoute>
+        } />
+
+        {/* About Us */}
+        <Route path="/about" element={
+          <ProtectedRoute>
+            <AboutUs />
           </ProtectedRoute>
         } />
 

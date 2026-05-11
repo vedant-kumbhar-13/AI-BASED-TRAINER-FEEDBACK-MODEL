@@ -86,6 +86,7 @@ def submit_quiz(request):
     Returns results with correct answers and score.
     """
     answers = request.data.get('answers', {})
+    topic_id = request.data.get('topic_id')  # E7 fix: optional topic scope
     if not answers:
         return Response(
             {'error': 'answers dict is required'},
@@ -93,7 +94,11 @@ def submit_quiz(request):
         )
 
     question_ids = list(answers.keys())
-    questions = AptitudeQuestion.objects.filter(id__in=question_ids)
+    # E7 fix: scope questions to topic if provided (prevents cross-topic score inflation)
+    qs = AptitudeQuestion.objects.filter(id__in=question_ids)
+    if topic_id:
+        qs = qs.filter(topic_id=topic_id)
+    questions = qs
     q_map = {str(q.id): q for q in questions}
 
     results = []
@@ -103,7 +108,9 @@ def submit_quiz(request):
         q = q_map.get(str(qid))
         if not q:
             continue
-        is_correct = (selected == q.correct_answer)
+        # Treat null / empty string as "not answered"
+        answered = selected is not None and selected != ''
+        is_correct = answered and (selected == q.correct_answer)
         if is_correct:
             correct_count += 1
         results.append({
@@ -111,6 +118,7 @@ def submit_quiz(request):
             'selectedAnswer': selected,
             'correctAnswer': q.correct_answer,
             'isCorrect': is_correct,
+            'notAnswered': not answered,
         })
 
     total = len(results)

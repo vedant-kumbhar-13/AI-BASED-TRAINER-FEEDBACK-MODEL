@@ -8,9 +8,16 @@ interface AuthStore {
   logout: () => void;
 }
 
+// M1 fix: hydrate from localStorage on cold load
+const _storedToken = localStorage.getItem('access_token');
+const _storedUser = (() => {
+  try { const u = localStorage.getItem('user'); return u ? JSON.parse(u) : null; }
+  catch { return null; }
+})();
+
 export const useAuthStore = create<AuthStore>((set) => ({
-  user: null,
-  token: null,
+  user: _storedUser,
+  token: _storedToken,
   setAuth: (response) => {
     if (response.access) localStorage.setItem('access_token', response.access);
     if (response.refresh) localStorage.setItem('refresh_token', response.refresh);

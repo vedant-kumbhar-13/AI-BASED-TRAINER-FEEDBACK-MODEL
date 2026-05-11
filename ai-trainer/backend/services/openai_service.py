@@ -311,8 +311,14 @@ Format:
                 "type": str(item.get("type", "Technical")).strip(),
             })
 
-    if len(validated) < num_questions:
-        raise ValueError(f"Gemini returned {len(validated)} valid questions, expected {num_questions}.")
+    # M5 fix: accept partial results if they meet a reasonable threshold
+    # Only fail if Gemini returned far fewer than requested (less than ~60%)
+    min_acceptable = max(3, num_questions - 2)
+    if len(validated) < min_acceptable:
+        raise ValueError(
+            f"Gemini returned {len(validated)} valid questions, "
+            f"expected at least {min_acceptable} (requested {num_questions})."
+        )
 
     return validated[:num_questions]
 

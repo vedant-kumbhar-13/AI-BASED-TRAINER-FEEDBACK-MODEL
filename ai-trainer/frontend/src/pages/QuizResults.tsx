@@ -9,6 +9,13 @@ interface QuizResultsState {
   correctCount: number;
   totalQuestions: number;
   quizQuestionIds: number[];
+  questions?: any[];        // full question objects passed from Quiz.tsx
+  apiResults?: {            // per-question results from backend submit
+    questionId: number;
+    selectedAnswer: string;
+    correctAnswer: string;
+    isCorrect: boolean;
+  }[];
 }
 
 export const QuizResults = () => {
@@ -17,12 +24,29 @@ export const QuizResults = () => {
   const state = location.state as QuizResultsState | null;
 
   const topic = topicId ? getTopicById(parseInt(topicId)) : null;
-  const allQuestions = topicId ? getQuestionsByTopicId(parseInt(topicId)) : [];
 
-  // Filter to only the questions that were in the actual quiz
-  const questions = state?.quizQuestionIds
-    ? allQuestions.filter(q => state.quizQuestionIds.includes(q.id))
-    : allQuestions;
+  // Prefer questions passed via state (includes API questions with options)
+  // Fall back to static local data for older navigation paths
+  const staticQuestions = topicId ? getQuestionsByTopicId(parseInt(topicId)) : [];
+  const passedQuestions: any[] = state?.questions || [];
+
+  // Merge: if we have API results, patch correctAnswer onto each question
+  const apiResultMap = Object.fromEntries(
+    (state?.apiResults || []).map(r => [r.questionId, r])
+  );
+
+  // Build final question list to display
+  const rawQuestions = passedQuestions.length > 0 ? passedQuestions : (
+    state?.quizQuestionIds
+      ? staticQuestions.filter(q => state.quizQuestionIds.includes(q.id))
+      : staticQuestions
+  );
+
+  // Patch in correctAnswer from API results where available
+  const questions = rawQuestions.map(q => {
+    const apiR = apiResultMap[q.id];
+    return apiR ? { ...q, correctAnswer: apiR.correctAnswer } : q;
+  });
 
   if (!topic || !state) {
     return (

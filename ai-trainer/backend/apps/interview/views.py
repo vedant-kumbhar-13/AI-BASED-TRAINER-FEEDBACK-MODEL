@@ -23,28 +23,45 @@ from .serializers import (
     InterviewQuestionSerializer, AnswerSubmitSerializer, InterviewAnswerSerializer,
     InterviewFeedbackSerializer, SessionWithFeedbackSerializer, InterviewHistorySerializer
 )
-from .services import GeminiService, ResumeParser, FeedbackGenerator
+from .services import GeminiService, ResumeParser
 from .services.report_generator import generate_report_pdf
-from services.openai_service import generate_questions, evaluate_interview
+from services.openai_service import (
+    generate_questions,
+    evaluate_interview,
+    generate_live_question,
+    evaluate_live_interview,
+)
 import json
 
 logger = logging.getLogger(__name__)
 
 
-def normalize_score(val):
-    """Normalize an AI score to 0-100 range.
-    Gemini may return 0.0-10.0 or 0-100 unpredictably.
-    """
-    try:
-        v = float(val or 0)
-        if v > 100:
-            return 100.0
-        elif v > 10:
-            return round(v, 1)  # Already 0-100
-        else:
-            return round(v * 10, 1)  # Scale 0-10 → 0-100
-    except (TypeError, ValueError):
-        return 0.0
+# ── Shared resume context builder (I1 fix: DRY) ────────────────────────────────
+def _build_resume_context(resume) -> str:
+    """Build comprehensive resume context string for AI question generation."""
+    if not resume:
+        return "No resume provided."
+    skills_str = ', '.join(resume.skills or [])
+    exp_str = '\n'.join([
+        f"- {e.get('title','')}, {e.get('company','')}, {e.get('duration','')}"
+        for e in (resume.experience or []) if isinstance(e, dict)
+    ])
+    edu_str = '\n'.join([
+        f"- {e.get('degree','')}, {e.get('institution','')}, {e.get('year','')}"
+        for e in (resume.education or []) if isinstance(e, dict)
+    ])
+    projects_str = '\n'.join([
+        f"- {p.get('name','')}: {p.get('description','')[:150]}"
+        for p in (resume.projects or []) if isinstance(p, dict)
+    ])
+    raw_excerpt = (resume.raw_text or '')[:500]
+    return (
+        f"Summary: {resume.summary or ''}\nSkills: {skills_str}\n"
+        f"Experience:\n{exp_str}\nEducation:\n{edu_str}\n"
+        f"Projects:\n{projects_str}\nResume Excerpt: {raw_excerpt}"
+    )
+
+
 
 
 # ===========================================
@@ -491,9 +508,10 @@ def transcribe_audio(request):
         return Response({"error": "No audio file. Send as multipart/form-data."}, status=400)
     # Guard: reject uploads > 10 MB (60s of WebM audio is ~1-2 MB)
     MAX_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB
-    audio_bytes = audio_file.read()
-    if len(audio_bytes) > MAX_AUDIO_BYTES:
+    # C5 fix: check file size BEFORE reading into memory
+    if audio_file.size > MAX_AUDIO_BYTES:
         return Response({"error": "Audio file too large. Maximum 60 seconds of recording allowed."}, status=400)
+    audio_bytes = audio_file.read()
     if len(audio_bytes) < 100:
         return Response({"error": "Audio too short or empty."}, status=400)
     language = request.data.get("language", "en-IN")
@@ -521,7 +539,6 @@ def synthesize_speech(request):
     except Exception as e:
         logger.error("TTS failed: %s", e)
         return Response({"error": f"Text-to-speech failed: {e}"}, status=503)
-    from django.http import HttpResponse
     return HttpResponse(audio_bytes, content_type="audio/mpeg")
 
 
@@ -558,24 +575,8 @@ def live_start_interview(request):
     else:
         resume = Resume.objects.filter(user=request.user).order_by('-created_at').first()
 
-    # Build resume context — comprehensive for better question generation
-    resume_context = "No resume provided."
-    if resume:
-        skills_str = ', '.join(resume.skills or [])
-        exp_str = '\n'.join([
-            f"- {e.get('title','')}, {e.get('company','')}, {e.get('duration','')}"
-            for e in (resume.experience or []) if isinstance(e, dict)
-        ])
-        edu_str = '\n'.join([
-            f"- {e.get('degree','')}, {e.get('institution','')}, {e.get('year','')}"
-            for e in (resume.education or []) if isinstance(e, dict)
-        ])
-        projects_str = '\n'.join([
-            f"- {p.get('name','')}: {p.get('description','')[:150]}"
-            for p in (resume.projects or []) if isinstance(p, dict)
-        ])
-        raw_excerpt = (resume.raw_text or '')[:500]
-        resume_context = f"Summary: {resume.summary or ''}\nSkills: {skills_str}\nExperience:\n{exp_str}\nEducation:\n{edu_str}\nProjects:\n{projects_str}\nResume Excerpt: {raw_excerpt}"
+    # Build resume context — uses shared helper (I1 fix: DRY)
+    resume_context = _build_resume_context(resume)
 
     # Create session
     with transaction.atomic():
@@ -591,7 +592,6 @@ def live_start_interview(request):
 
     # Generate first question
     try:
-        from services.openai_service import generate_live_question
         result = generate_live_question(
             resume_context=resume_context,
             conversation_history=[],
@@ -645,6 +645,12 @@ def live_chat(request):
     if session.status == 'completed':
         return Response({'error': 'Session already completed'}, status=409)
 
+    # C6 fix: validate question_number bounds
+    total_questions = session.total_questions or 8
+    actual_answered = InterviewQuestion.objects.filter(session=session).count()
+    if question_number < 1 or question_number > actual_answered + 1:
+        return Response({'error': 'Invalid question_number'}, status=400)
+
     # Save the answer
     if current_question_id and answer_text:
         try:
@@ -685,29 +691,11 @@ def live_chat(request):
             'total_questions': total_questions,
         })
 
-    # Resume context — comprehensive
-    resume_context = "No resume provided."
-    if session.resume:
-        r = session.resume
-        skills_str = ', '.join(r.skills or [])
-        exp_str = '\n'.join([
-            f"- {e.get('title','')}, {e.get('company','')}, {e.get('duration','')}"
-            for e in (r.experience or []) if isinstance(e, dict)
-        ])
-        edu_str = '\n'.join([
-            f"- {e.get('degree','')}, {e.get('institution','')}, {e.get('year','')}"
-            for e in (r.education or []) if isinstance(e, dict)
-        ])
-        projects_str = '\n'.join([
-            f"- {p.get('name','')}: {p.get('description','')[:150]}"
-            for p in (r.projects or []) if isinstance(p, dict)
-        ])
-        raw_excerpt = (r.raw_text or '')[:500]
-        resume_context = f"Summary: {r.summary or ''}\nSkills: {skills_str}\nExperience:\n{exp_str}\nEducation:\n{edu_str}\nProjects:\n{projects_str}\nResume Excerpt: {raw_excerpt}"
+    # Resume context — uses shared helper (I1 fix: DRY)
+    resume_context = _build_resume_context(session.resume)
 
     # Generate next question
     try:
-        from services.openai_service import generate_live_question
         result = generate_live_question(
             resume_context=resume_context,
             conversation_history=conversation_history,
@@ -781,11 +769,13 @@ def live_submit_all(request):
 
     # Evaluate
     try:
-        from services.openai_service import evaluate_live_interview
         evaluation = evaluate_live_interview(answers)
     except Exception as e:
-        logger.error(f"Live evaluation failed: {e}")
-        return Response({'error': 'Evaluation failed. Please try again.'}, status=503)
+        # E5 fix: log exception type explicitly for better debugging
+        logger.error("live_submit_all [%s] session=%s: %s", type(e).__name__, session_id, e, exc_info=True)
+        msg = 'AI service busy — try again in 30s.' if 'quota' in str(e).lower() \
+            else 'Evaluation failed. Please try again.'
+        return Response({'error': msg}, status=503)
 
     # Persist scores
     with transaction.atomic():
@@ -939,10 +929,13 @@ def submit_all(request):
     # 503 — single Gemini holistic evaluation call (BUG-04 fix)
     try:
         evaluation = evaluate_interview(answers)
-    except ValueError as e:
-        logger.error(f"Evaluation failed for session {session_id}: {e}")
+    except Exception as e:
+        # C4 fix: catch all exceptions, not just ValueError
+        logger.error("submit_all failed [%s] session=%s: %s", type(e).__name__, session_id, e, exc_info=True)
+        msg = 'AI service busy — try again in 30s.' if 'quota' in str(e).lower() \
+            else 'Interview evaluation failed. Please try again.'
         return Response(
-            {'error': 'Interview evaluation failed. Please try again.'},
+            {'error': msg},
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
@@ -1096,10 +1089,13 @@ def download_report(request, session_id):
     # ── Return cached PDF if already generated ──────────────────────────────
     if evaluation.report_pdf and evaluation.report_pdf.name:
         try:
-            pdf_bytes = evaluation.report_pdf.read()
-            response = HttpResponse(pdf_bytes, content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename="{filename}"'
-            return response
+            # M8 fix: use FileResponse to stream the cached PDF instead of loading into memory
+            return FileResponse(
+                evaluation.report_pdf.open('rb'),
+                content_type='application/pdf',
+                filename=filename,
+                as_attachment=True,
+            )
         except Exception:
             pass  # Cache read failed — generate fresh
 
