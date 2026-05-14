@@ -300,7 +300,9 @@ MIT License — see [LICENSE](LICENSE) for details.
 ## 👤 Author
 
 **Vedant Kumbhar**
+
 **Loukik Ingale**
+
 **Meeraj Krishna MR**
 
 - GitHub: [@vedant-kumbhar-13](https://github.com/vedant-kumbhar-13)
