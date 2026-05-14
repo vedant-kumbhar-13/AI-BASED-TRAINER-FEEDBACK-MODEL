@@ -12,7 +12,12 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from django.views.generic import RedirectView
+
 urlpatterns = [
+    # Root → redirect to admin
+    path('', RedirectView.as_view(url='/admin/', permanent=False)),
+
     # Admin
     path('admin/', admin.site.urls),
     

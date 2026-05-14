@@ -87,7 +87,19 @@ function App() {
             <Quiz />
           </ProtectedRoute>
         } />
+        {/* Slug-based quiz route for admin-added topics */}
+        <Route path="/quiz/slug/:topicSlug" element={
+          <ProtectedRoute>
+            <Quiz />
+          </ProtectedRoute>
+        } />
         <Route path="/quiz-results/:topicId" element={
+          <ProtectedRoute>
+            <QuizResults />
+          </ProtectedRoute>
+        } />
+        {/* Slug-based results route for admin-added topics */}
+        <Route path="/quiz-results/slug/:topicSlug" element={
           <ProtectedRoute>
             <QuizResults />
           </ProtectedRoute>

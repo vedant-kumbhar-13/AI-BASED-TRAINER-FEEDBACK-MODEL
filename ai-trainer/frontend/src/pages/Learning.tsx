@@ -183,7 +183,7 @@ export const Learning = () => {
                           >
                             <span className="text-base">{topic.icon}</span>
                             <span className="truncate">{topic.name}</span>
-                            {QUIZ_TOPICS.find(qt => qt.name === topic.name) && (
+                            {topic.has_quiz && (
                               <span className="ml-auto text-[10px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">
                                 Quiz
                               </span>
@@ -236,11 +236,15 @@ export const Learning = () => {
                   <p className="text-gray-800 font-medium">{activeTopic.definition}</p>
                 </div>
 
-                {/* Quiz CTA */}
-                {(() => {
+                {/* Quiz CTA — driven by backend has_quiz flag */}
+                {activeTopic.has_quiz && (() => {
+                  // Try to find in static list for progress tracking; fall back gracefully
                   const quizTopic = QUIZ_TOPICS.find(qt => qt.name === activeTopic.name);
-                  if (!quizTopic) return null;
-                  const quizProgress = getProgress(quizTopic.id);
+                  const quizProgress = quizTopic ? getProgress(quizTopic.id) : null;
+                  // Static topics use numeric ID, admin-added topics use slug-based route
+                  const quizLink = quizTopic
+                    ? `/quiz/${quizTopic.id}`
+                    : `/quiz/slug/${activeTopic.slug}`;
                   return (
                     <div className="mt-4 bg-gradient-to-r from-green-50 to-white rounded-lg p-4 border border-green-200">
                       <div className="flex items-center justify-between">
@@ -253,7 +257,7 @@ export const Learning = () => {
                           )}
                         </div>
                         <Link
-                          to={`/quiz/${quizTopic.id}`}
+                          to={quizLink}
                           className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white font-bold text-sm rounded-lg transition shadow-sm"
                         >
                           {quizProgress ? 'Retake Quiz' : 'Take Quiz'}

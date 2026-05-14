@@ -43,18 +43,38 @@ def list_topics(request):
 def get_questions(request):
     """
     GET /api/aptitude/questions/?topic_id=1&count=10
+    GET /api/aptitude/questions/?topic_name=Verbal+Reasoning&count=10
 
     Returns `count` random questions for the given topic.
     Does NOT include correct_answer — that is only revealed on submit.
-    """
-    topic_id = request.query_params.get('topic_id')
-    count = int(request.query_params.get('count', 10))
 
-    if not topic_id:
+    topic_id  → numeric AptitudeTopic.id  (used by old static-data flow)
+    topic_name → AptitudeTopic.name lookup (used by admin-added topics)
+    """
+    topic_id   = request.query_params.get('topic_id')
+    topic_name = request.query_params.get('topic_name', '').strip()
+    count      = int(request.query_params.get('count', 10))
+
+    if not topic_id and not topic_name:
         return Response(
-            {'error': 'topic_id query param is required'},
+            {'error': 'topic_id or topic_name query param is required'},
             status=status.HTTP_400_BAD_REQUEST
         )
+
+    # Resolve topic_id from name if only name was supplied
+    if not topic_id and topic_name:
+        try:
+            topic_obj = AptitudeTopic.objects.get(name__iexact=topic_name)
+            topic_id = topic_obj.id
+        except AptitudeTopic.DoesNotExist:
+            return Response(
+                {'error': f'No topic found with name "{topic_name}"'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except AptitudeTopic.MultipleObjectsReturned:
+            topic_id = AptitudeTopic.objects.filter(
+                name__iexact=topic_name
+            ).first().id
 
     # ORDER BY RANDOM() — different questions every attempt (BUG-03 fix)
     questions = (
@@ -74,6 +94,7 @@ def get_questions(request):
         })
 
     return Response({'questions': data, 'count': len(data)})
+
 
 
 @api_view(['POST'])

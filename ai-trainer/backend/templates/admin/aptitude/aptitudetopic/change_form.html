@@ -1,0 +1,467 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+{{ block.super }}
+<style>
+/* ── AI Generation Panel ─────────────────────────────────── */
+#ai-gen-panel {
+  background: #1F1F1F;
+  border-left: 4px solid #E63E29;
+  border-radius: 8px;
+  padding: 20px 24px;
+  margin-bottom: 24px;
+  font-family: 'Inter', sans-serif;
+}
+#ai-gen-panel h3 {
+  margin: 0 0 4px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+}
+#ai-gen-panel p.subtitle {
+  margin: 0 0 16px;
+  color: #888;
+  font-size: 0.8rem;
+}
+.ai-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ai-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #E63E29;
+  color: #fff !important;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 18px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none !important;
+  transition: background 0.18s, transform 0.1s;
+}
+.ai-btn:hover { background: #CD1701 !important; transform: translateY(-1px); }
+.ai-btn:disabled { background: #555 !important; cursor: not-allowed; transform: none; }
+.ai-btn.secondary {
+  background: transparent;
+  border: 1px solid #444;
+  color: #ccc !important;
+}
+.ai-btn.secondary:hover { background: #2a2a2a !important; color: #fff !important; }
+
+#ai-status {
+  color: #aaa;
+  font-size: 0.82rem;
+  min-height: 20px;
+  margin-top: 4px;
+}
+#ai-status.error { color: #f87171; }
+#ai-status.ok    { color: #4ade80; }
+
+/* Preview panel */
+#ai-preview {
+  display: none;
+  margin-top: 16px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 16px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+#ai-preview h4 {
+  color: #E63E29;
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#ai-preview pre {
+  color: #ccc;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+/* Question preview table */
+#q-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  color: #ccc;
+}
+#q-preview-table th {
+  background: #333;
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+}
+#q-preview-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #2a2a2a;
+  vertical-align: top;
+}
+#q-preview-table td.correct { color: #4ade80; font-weight: 600; }
+
+/* Video preview */
+.vid-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+.vid-card img { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; }
+.vid-card .vid-info { flex: 1; }
+.vid-card .vid-title { color: #eee; font-size: 0.8rem; font-weight: 500; }
+.vid-card .vid-channel { color: #888; font-size: 0.74rem; margin-top: 2px; }
+.vid-card a { color: #E63E29 !important; font-size: 0.74rem; }
+
+/* Spinner */
+.spinner {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border: 2px solid #fff;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+{% endblock %}
+
+{% block content %}
+
+{# ── AI Generation Panel (only on add/change pages for AptitudeTopic) ── #}
+<div id="ai-gen-panel">
+  <h3>🤖 AI Content Generator</h3>
+  <p class="subtitle">Type the topic name above, then click a button to generate content with Gemini AI.</p>
+
+  <div class="ai-btn-row">
+    <button type="button" class="ai-btn" id="btn-gen-desc">
+      📝 Generate Description
+    </button>
+    <button type="button" class="ai-btn" id="btn-gen-q">
+      ❓ Generate 10 Questions
+    </button>
+    <button type="button" class="ai-btn" id="btn-gen-vid">
+      🎬 Fetch YouTube Videos
+    </button>
+    <button type="button" class="ai-btn secondary" id="btn-save-vid" style="display:none">
+      💾 Save Videos to Learning Page
+    </button>
+  </div>
+
+  <div id="ai-status">Ready — enter a topic name and click a button above.</div>
+  <div id="ai-preview"></div>
+</div>
+
+{{ block.super }}
+
+<script>
+(function () {
+  /* ── helpers ───────────────────────────────────────────── */
+  function getTopicName() {
+    const el = document.getElementById('id_name');
+    return el ? el.value.trim() : '';
+  }
+
+  function setStatus(msg, cls) {
+    const el = document.getElementById('ai-status');
+    el.textContent = msg;
+    el.className = cls || '';
+  }
+
+  function showPreview(html) {
+    const el = document.getElementById('ai-preview');
+    el.style.display = 'block';
+    el.innerHTML = html;
+  }
+
+  function hidePreview() {
+    const el = document.getElementById('ai-preview');
+    el.style.display = 'none';
+    el.innerHTML = '';
+  }
+
+  function getCsrfToken() {
+    // Get Django's CSRF token from the cookie
+    const name = 'csrftoken';
+    const cookies = document.cookie.split(';');
+    for (let c of cookies) {
+      const [k, v] = c.trim().split('=');
+      if (k === name) return decodeURIComponent(v);
+    }
+    return '';
+  }
+
+  async function apiPost(url, body) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCsrfToken(),
+      },
+      credentials: 'include',
+      body: JSON.stringify(body),
+    });
+    return resp.json();
+  }
+
+  function setBtn(id, disabled) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  }
+
+  function disableAll() {
+    ['btn-gen-desc', 'btn-gen-q', 'btn-gen-vid', 'btn-save-vid'].forEach(id => setBtn(id, true));
+  }
+
+  function enableAll() {
+    ['btn-gen-desc', 'btn-gen-q', 'btn-gen-vid'].forEach(id => setBtn(id, false));
+    // btn-save-vid enabled separately only when videos exist
+  }
+
+  // Stores the last fetched videos so we can persist them
+  let _fetchedVideos = [];
+
+  function getTopicId() {
+    // Extract topic ID from the URL: /admin/aptitude/aptitudetopic/5/change/
+    const m = window.location.pathname.match(/aptitudetopic\/(\d+)/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  /* ── 1. Generate Description ───────────────────────────── */
+  document.getElementById('btn-gen-desc').addEventListener('click', async () => {
+    const name = getTopicName();
+    if (!name) { setStatus('⚠️ Please enter a topic name first.', 'error'); return; }
+
+    disableAll();
+    hidePreview();
+    setStatus('<span class="spinner"></span> Generating description with Gemini…');
+    document.getElementById('ai-status').innerHTML = '⏳ Generating description with Gemini AI…';
+
+    try {
+      const data = await apiPost('/api/aptitude/admin/generate-description/', { topic_name: name });
+      if (!data.ok) throw new Error(data.error || 'Unknown error');
+
+      // Fill the form fields
+      const defEl = document.getElementById('id_definition');
+      const descEl = document.getElementById('id_description');
+      if (defEl) defEl.value = data.definition;
+      if (descEl) descEl.value = data.description;
+
+      setStatus('✅ Description generated and filled in the form below!', 'ok');
+      showPreview(`
+        <h4>Preview — Definition</h4>
+        <pre>${escHtml(data.definition)}</pre>
+        <h4 style="margin-top:12px">Preview — Description HTML (first 500 chars)</h4>
+        <pre>${escHtml(data.description.slice(0, 500))}…</pre>
+      `);
+    } catch (e) {
+      setStatus('❌ Error: ' + e.message, 'error');
+    } finally {
+      enableAll();
+    }
+  });
+
+  /* ── 2. Generate Questions ─────────────────────────────── */
+  document.getElementById('btn-gen-q').addEventListener('click', async () => {
+    const name = getTopicName();
+    if (!name) { setStatus('⚠️ Please enter a topic name first.', 'error'); return; }
+
+    disableAll();
+    hidePreview();
+    document.getElementById('ai-status').innerHTML = '⏳ Generating 10 quiz questions with Gemini AI…';
+
+    try {
+      const data = await apiPost('/api/aptitude/admin/generate-questions/', { topic_name: name, count: 10 });
+      if (!data.ok) throw new Error(data.error || 'Unknown error');
+
+      const questions = data.questions;
+
+      // Auto-fill inline formset rows that are currently empty
+      fillInlineQuestions(questions);
+
+      setStatus(`✅ ${questions.length} questions generated and filled in the Questions section below!`, 'ok');
+
+      // Show preview table
+      let rows = questions.map((q, i) => `
+        <tr>
+          <td>${i+1}. ${escHtml(q.text)}</td>
+          <td>${escHtml(q.option_a)}</td>
+          <td>${escHtml(q.option_b)}</td>
+          <td>${escHtml(q.option_c)}</td>
+          <td>${escHtml(q.option_d)}</td>
+          <td class="correct">${escHtml(q.correct_answer)}</td>
+        </tr>`).join('');
+
+      showPreview(`
+        <h4>Preview — ${questions.length} Questions</h4>
+        <table id="q-preview-table">
+          <tr>
+            <th>Question</th><th>A</th><th>B</th><th>C</th><th>D</th><th>✓ Answer</th>
+          </tr>
+          ${rows}
+        </table>
+      `);
+    } catch (e) {
+      setStatus('❌ Error: ' + e.message, 'error');
+    } finally {
+      enableAll();
+    }
+  });
+
+  /* ── 3. Fetch YouTube Videos ───────────────────────────── */
+  document.getElementById('btn-gen-vid').addEventListener('click', async () => {
+    const name = getTopicName();
+    if (!name) { setStatus('⚠️ Please enter a topic name first.', 'error'); return; }
+
+    disableAll();
+    hidePreview();
+    document.getElementById('ai-status').innerHTML = '⏳ Searching YouTube for relevant videos…';
+
+    try {
+      const data = await apiPost('/api/aptitude/admin/generate-videos/', { topic_name: name, count: 5 });
+      if (!data.ok) throw new Error(data.error || 'Unknown error');
+
+      const videos = data.videos;
+      if (!videos.length) {
+        setStatus('⚠️ No videos found. Check YouTube API key or try a different topic name.', 'error');
+        return;
+      }
+
+      // Store for the save button
+      _fetchedVideos = videos;
+      const saveBtn = document.getElementById('btn-save-vid');
+      if (saveBtn) {
+        saveBtn.style.display = '';
+        saveBtn.disabled = false;
+      }
+
+      setStatus(`✅ ${videos.length} videos found! Click "💾 Save Videos to Learning Page" to persist them.`, 'ok');
+
+      const cards = videos.map(v => `
+        <div class="vid-card">
+          ${v.thumbnail_url ? `<img src="${escHtml(v.thumbnail_url)}" alt="">` : ''}
+          <div class="vid-info">
+            <div class="vid-title">${escHtml(v.title)}</div>
+            <div class="vid-channel">${escHtml(v.channel_name)}</div>
+          </div>
+          <a href="https://youtube.com/watch?v=${escHtml(v.youtube_id)}" target="_blank" rel="noopener">
+            ▶ ${escHtml(v.youtube_id)}
+          </a>
+        </div>`).join('');
+
+      showPreview(`<h4>YouTube Videos for "${escHtml(name)}"</h4>${cards}`);
+    } catch (e) {
+      setStatus('❌ Error: ' + e.message, 'error');
+    } finally {
+      enableAll();
+    }
+  });
+
+  /* ── 4. Save Videos to Learning Page ──────────────────── */
+  document.getElementById('btn-save-vid').addEventListener('click', async () => {
+    if (!_fetchedVideos.length) {
+      setStatus('⚠️ No videos to save. Fetch videos first.', 'error');
+      return;
+    }
+    const topicId = getTopicId();
+    if (!topicId) {
+      setStatus('⚠️ Please save the topic first (click Save button below), then fetch & save videos.', 'error');
+      return;
+    }
+
+    disableAll();
+    document.getElementById('ai-status').innerHTML = '⏳ Saving videos to the Learning page database…';
+
+    try {
+      const data = await apiPost('/api/aptitude/admin/save-generated/', {
+        topic_id: topicId,
+        videos: _fetchedVideos,
+      });
+      if (!data.ok) throw new Error(data.error || 'Unknown error');
+
+      const saved = data.videos_saved || 0;
+      setStatus(
+        `✅ ${saved} video(s) saved to the Learning page! Refresh /learning to see them.`,
+        'ok'
+      );
+      // Hide save button after saving
+      const saveBtn = document.getElementById('btn-save-vid');
+      if (saveBtn) saveBtn.style.display = 'none';
+      _fetchedVideos = [];
+    } catch (e) {
+      setStatus('❌ Error saving videos: ' + e.message, 'error');
+    } finally {
+      enableAll();
+    }
+  });
+
+  /* ── Helper: fill inline question formset rows ─────────── */
+  function fillInlineQuestions(questions) {
+    // Find all inline formset rows (Django's tabular inline pattern)
+    // Rows are identified by the TOTAL_FORMS count in the management form
+    const prefix = 'questions';  // inline prefix = related_name on model
+
+    // Count total forms
+    const totalEl = document.getElementById(`id_${prefix}-TOTAL_FORMS`);
+    if (!totalEl) {
+      // Fallback: can't auto-fill, just show preview
+      return;
+    }
+
+    let currentTotal = parseInt(totalEl.value, 10);
+
+    questions.forEach((q, idx) => {
+      const rowIdx = currentTotal + idx;
+
+      // Add new rows dynamically using Django's add-row mechanism if available
+      // OR fill existing empty rows first
+      const fields = {
+        [`id_${prefix}-${rowIdx}-text`]: q.text,
+        [`id_${prefix}-${rowIdx}-option_a`]: q.option_a,
+        [`id_${prefix}-${rowIdx}-option_b`]: q.option_b,
+        [`id_${prefix}-${rowIdx}-option_c`]: q.option_c,
+        [`id_${prefix}-${rowIdx}-option_d`]: q.option_d,
+        [`id_${prefix}-${rowIdx}-correct_answer`]: q.correct_answer,
+      };
+
+      // Click "Add another" link to create the row
+      const addLink = document.querySelector(`tr.add-row a, a.add-row`);
+      if (addLink) addLink.click();
+
+      // Fill fields after a short delay for DOM to update
+      setTimeout(() => {
+        Object.entries(fields).forEach(([id, val]) => {
+          const el = document.getElementById(id);
+          if (el) el.value = val;
+        });
+      }, 100 * (idx + 1));
+    });
+
+    // Update TOTAL_FORMS count
+    totalEl.value = currentTotal + questions.length;
+  }
+
+  /* ── Helper: escape HTML for display ──────────────────── */
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+})();
+</script>
+{% endblock %}

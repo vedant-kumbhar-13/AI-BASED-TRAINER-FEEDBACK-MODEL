@@ -1,10 +1,4 @@
+# This app (root 'accounts') is NOT in INSTALLED_APPS.
+# The active accounts app is 'apps.accounts' — admin is registered there.
+# This file is intentionally left empty to avoid duplicate admin registration.
 from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import CustomUser
-
-@admin.register(CustomUser)
-class CustomUserAdmin(BaseUserAdmin):
-    list_display = ('username', 'email', 'first_name', 'last_name', 'is_staff')
-    fieldsets = BaseUserAdmin.fieldsets + (
-        ('Additional Info', {'fields': ('bio', 'phone_number', 'profile_picture')}),
-    )

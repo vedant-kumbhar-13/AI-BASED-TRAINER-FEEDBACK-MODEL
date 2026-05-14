@@ -195,6 +195,16 @@ export const Login = () => {
                 Sign up free
               </Link>
             </p>
+
+            {/* Admin Login Link */}
+            <a
+              href="http://127.0.0.1:8000/admin/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-center text-sm font-semibold text-primary hover:text-primary-dark hover:underline transition-colors mt-1"
+            >
+              🔐 Log in as Admin
+            </a>
           </form>
         </div>
       </div>

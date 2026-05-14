@@ -1,0 +1,17 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{{ title }} | AI Trainer Admin{% endblock %}
+
+{% block extrahead %}
+{{ block.super }}
+{# Inject the project-themed CSS over Django's default blue #}
+<link rel="stylesheet" type="text/css" href="/static/admin/css/custom_theme.css">
+{% endblock %}
+
+{% block branding %}
+<h1 id="site-name">
+    <a href="{% url 'admin:index' %}">
+        🎓 AI Trainer &mdash; Admin
+    </a>
+</h1>
+{% endblock %}

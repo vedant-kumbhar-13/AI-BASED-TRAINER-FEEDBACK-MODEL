@@ -1,0 +1,80 @@
+{% extends "admin/index.html" %}
+{% load i18n %}
+
+{% block content %}
+<style>
+  /* ── Quick actions banner ── */
+  .at-banner {
+    background: #1F1F1F;
+    border-left: 4px solid #E63E29;
+    border-radius: 8px;
+    padding: 24px 28px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .at-banner-text h2 {
+    margin: 0 0 4px;
+    color: #fff;
+    font-size: 1.2rem;
+    font-weight: 700;
+    font-family: 'Poppins', 'Inter', sans-serif;
+  }
+  .at-banner-text p {
+    margin: 0;
+    color: #999;
+    font-size: 0.85rem;
+  }
+  .at-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .at-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #E63E29;
+    color: #fff !important;
+    text-decoration: none !important;
+    border-radius: 6px;
+    padding: 9px 18px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    transition: background 0.18s ease, transform 0.12s ease;
+  }
+  .at-btn:hover {
+    background: #CD1701 !important;
+    transform: translateY(-1px);
+    color: #fff !important;
+  }
+  .at-btn-ghost {
+    background: transparent;
+    border: 1px solid #444;
+    color: #ccc !important;
+  }
+  .at-btn-ghost:hover {
+    background: #2a2a2a !important;
+    color: #fff !important;
+    border-color: #666;
+  }
+</style>
+
+<div class="at-banner">
+  <div class="at-banner-text">
+    <h2>🎓 AI Trainer — Admin Panel</h2>
+    <p>Manage aptitude content and view student performance</p>
+  </div>
+  <div class="at-actions">
+    <a href="/admin/aptitude/aptitudetopic/add/" class="at-btn">+ Add Topic</a>
+    <a href="/admin/aptitude/aptitudetopic/" class="at-btn at-btn-ghost">Browse Topics</a>
+    <a href="/admin/accounts/customuser/" class="at-btn at-btn-ghost">View Students</a>
+  </div>
+</div>
+
+{{ block.super }}
+{% endblock %}

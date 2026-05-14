@@ -1,0 +1,169 @@
+/*
+ * AI Trainer Admin — Project Theme
+ * Primary: #E63E29  |  Dark: #CD1701  |  BG: #F5F5F5  |  Text: #1F1F1F
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap');
+
+/* ── Fonts ── */
+body, input, select, textarea, button {
+  font-family: 'Inter', sans-serif !important;
+}
+
+/* ── Header ── */
+#header {
+  background: #1F1F1F !important;
+  border-bottom: 3px solid #E63E29 !important;
+}
+#branding h1, #branding h1 a, #branding h1 a:link, #branding h1 a:visited {
+  color: #fff !important;
+  font-family: 'Poppins', sans-serif !important;
+  font-weight: 700 !important;
+}
+#branding h1 a:hover { color: #E63E29 !important; }
+#user-tools, #user-tools a { color: #bbb !important; }
+#user-tools a:hover { color: #E63E29 !important; }
+
+/* ── Breadcrumbs ── */
+div.breadcrumbs {
+  background: #E63E29 !important;
+  color: #fff !important;
+}
+div.breadcrumbs a, div.breadcrumbs a:visited { color: #ffe8e0 !important; }
+div.breadcrumbs a:hover { color: #fff !important; }
+
+/* ── Links ── */
+a:link, a:visited { color: #E63E29 !important; }
+a:hover { color: #CD1701 !important; }
+
+/* ── Module headers ── */
+.module h2, .module caption, .inline-group h2 {
+  background: #1F1F1F !important;
+  color: #fff !important;
+  font-family: 'Poppins', sans-serif !important;
+}
+
+/* ── Buttons ── */
+.button, input[type="submit"], input[type="button"], .submit-row input, a.button {
+  background: #E63E29 !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 6px !important;
+  font-weight: 600 !important;
+  transition: background 0.18s !important;
+}
+.button:hover, input[type="submit"]:hover, a.button:hover {
+  background: #CD1701 !important;
+}
+.deletelink, a.deletelink {
+  background: #b91c1c !important;
+  color: #fff !important;
+  border-radius: 6px !important;
+}
+.deletelink:hover { background: #991b1b !important; }
+
+/* ── Filter sidebar ── */
+#changelist-filter h2 { background: #1F1F1F !important; color: #fff !important; }
+#changelist-filter h3 { color: #E63E29 !important; }
+#changelist-filter li.selected a { color: #E63E29 !important; font-weight: 600 !important; }
+
+/* ── Row hover ── */
+tr:hover > td { background: #fff5f3 !important; }
+tr.selected td { background: #ffe8e0 !important; }
+
+/* ── Pagination ── */
+.paginator a { color: #E63E29 !important; }
+.paginator .this-page {
+  background: #E63E29 !important; color: #fff !important;
+  border-radius: 4px !important; padding: 2px 8px !important;
+}
+
+/* ── Submit row ── */
+.submit-row {
+  background: #f9f9f9 !important;
+  border-top: 1px solid #e0e0e0 !important;
+}
+
+/* ── Messages ── */
+.messagelist li.success { background: #f0fdf4 !important; border-left: 4px solid #16a34a !important; color: #166534 !important; }
+.messagelist li.warning { background: #fffbeb !important; border-left: 4px solid #d97706 !important; }
+.messagelist li.error   { background: #fff0ef !important; border-left: 4px solid #E63E29 !important; color: #CD1701 !important; }
+
+/* ══════════════════════════════════════
+   LOGIN PAGE
+   ══════════════════════════════════════ */
+body.login {
+  background: #f5f5f5 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 100vh !important;
+}
+body.login #header { display: none !important; }
+div.breadcrumbs { display: none; }
+
+#login-form {
+  background: #fff !important;
+  border-radius: 12px !important;
+  padding: 40px 36px !important;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.10) !important;
+  border: 1px solid #e0e0e0 !important;
+  min-width: 360px !important;
+}
+
+/* Login logo/title */
+body.login h1 {
+  font-family: 'Poppins', sans-serif !important;
+  font-size: 1.5rem !important;
+  font-weight: 700 !important;
+  color: #1F1F1F !important;
+  text-align: center !important;
+  margin-bottom: 8px !important;
+}
+body.login h1 a, body.login h1 a:visited {
+  color: #1F1F1F !important;
+  text-decoration: none !important;
+}
+body.login h1 a:hover { color: #E63E29 !important; }
+
+/* Inputs */
+body.login input[type="text"],
+body.login input[type="password"],
+body.login input[type="email"] {
+  width: 100% !important;
+  border: 1px solid #ccc !important;
+  border-radius: 8px !important;
+  padding: 11px 14px !important;
+  font-size: 0.9rem !important;
+  font-family: 'Inter', sans-serif !important;
+  color: #1F1F1F !important;
+  transition: border-color 0.18s !important;
+}
+body.login input:focus {
+  border-color: #E63E29 !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(230,62,41,0.12) !important;
+}
+
+/* Login submit button */
+body.login input[type="submit"] {
+  width: 100% !important;
+  padding: 13px !important;
+  font-size: 0.95rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  border-radius: 8px !important;
+  margin-top: 4px !important;
+}
+
+/* Error box */
+body.login .errornote {
+  background: #fff0ef !important;
+  border: 1px solid #E63E29 !important;
+  color: #CD1701 !important;
+  border-radius: 8px !important;
+  padding: 10px 14px !important;
+  font-size: 0.85rem !important;
+  margin-bottom: 14px !important;
+}

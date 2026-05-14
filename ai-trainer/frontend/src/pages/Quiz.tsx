@@ -16,26 +16,77 @@ interface APIQuestion {
   correctAnswer?: string;  // Only populated after submit (from API) or from static data
 }
 
-export const Quiz = () => {
-  const { topicId } = useParams();
-  const navigate = useNavigate();
-  
-  const topic = topicId ? getTopicById(parseInt(topicId)) : null;
+// Minimal topic shape used for display when the static list doesn't have the topic
+interface DynamicTopic {
+  id: number | string;
+  name: string;
+  icon: string;
+  slug: string;
+}
 
-  // BUG-03: Fetch randomized questions from the API, fallback to static data
+export const Quiz = () => {
+  const { topicId, topicSlug } = useParams<{ topicId?: string; topicSlug?: string }>();
+  const navigate = useNavigate();
+
+  // ── Static topic (existing flow) ─────────────────────────────
+  const staticTopic = topicId ? getTopicById(parseInt(topicId)) : null;
+
+  // ── Dynamic topic (admin-added, slug-based) ───────────────────
+  const [dynamicTopic, setDynamicTopic] = useState<DynamicTopic | null>(null);
+
+  // Resolved topic for display — prefers static, falls back to dynamic
+  const topic = staticTopic || dynamicTopic;
+
   const [questions, setQuestions] = useState<APIQuestion[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [usingAPI, setUsingAPI] = useState(false);
-  
+
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTimerRunning, setIsTimerRunning] = useState(true);
 
   useEffect(() => {
-    if (!topicId) { setIsLoading(false); return; }
-
     const fetchQuestions = async () => {
+      // ── Case A: slug-based route (admin-added topic) ──────────
+      if (topicSlug) {
+        try {
+          // 1. Fetch topic metadata from learning API to get the real name
+          const topicRes = await fetch(
+            `${API_BASE.replace(/\/api$/, '')}/api/learning/topics/${topicSlug}/`
+          );
+          if (!topicRes.ok) throw new Error('Topic not found');
+          const topicData = await topicRes.json();
+
+          setDynamicTopic({
+            id: topicData.id,
+            name: topicData.name,
+            icon: topicData.icon || '📝',
+            slug: topicSlug,
+          });
+
+          // 2. Fetch quiz questions by topic name from aptitude API
+          const qRes = await fetch(
+            `${API_BASE}/aptitude/questions/?topic_name=${encodeURIComponent(topicData.name)}&count=${QUIZ_QUESTION_COUNT}`
+          );
+          if (!qRes.ok) throw new Error('Questions API error');
+          const qData = await qRes.json();
+
+          if (qData.questions && qData.questions.length > 0) {
+            setQuestions(qData.questions);
+            setUsingAPI(true);
+          }
+          // If no questions found — state stays empty → "Topic Not Found" shown
+        } catch (e) {
+          console.error('Failed to load slug-based quiz:', e);
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      // ── Case B: numeric topicId route (existing static-data flow) ──
+      if (!topicId) { setIsLoading(false); return; }
+
       try {
         const res = await fetch(
           `${API_BASE}/aptitude/questions/?topic_id=${topicId}&count=${QUIZ_QUESTION_COUNT}`
@@ -61,7 +112,8 @@ export const Quiz = () => {
     };
 
     fetchQuestions();
-  }, [topicId]);
+  }, [topicId, topicSlug]);
+
 
   const currentQuestion = questions[currentQuestionIndex];
   const answeredCount = Object.keys(answers).length;
@@ -129,13 +181,16 @@ export const Quiz = () => {
       score = Math.round((correctCount / questions.length) * 100);
     }
 
-    // Save progress locally
+    // Save progress locally (only for static topics with numeric ID)
     if (topicId) {
       saveProgressLocal(parseInt(topicId), score);
     }
 
+    // For slug-based topics, results route uses the slug
+    const resultsId = topicId ?? `slug/${topicSlug}`;
+
     // Navigate to results with state
-    navigate(`/quiz-results/${topicId}`, {
+    navigate(`/quiz-results/${resultsId}`, {
       state: {
         answers,
         score,
@@ -144,9 +199,10 @@ export const Quiz = () => {
         quizQuestionIds: questions.map(q => q.id),
         questions,       // ← pass full question objects (with text + options)
         apiResults,      // ← pass per-question correctAnswer from backend
+        topicName: topic?.name,  // ← pass name for display in results
       }
     });
-  }, [answers, questions, topicId, navigate, isSubmitting, usingAPI]);
+  }, [answers, questions, topicId, topicSlug, topic, navigate, isSubmitting, usingAPI]);
 
   const handleTimeUp = useCallback(() => {
     handleSubmit();
