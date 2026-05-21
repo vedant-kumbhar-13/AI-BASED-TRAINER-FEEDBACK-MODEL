@@ -54,6 +54,7 @@ export const LiveInterviewSession = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [transcriptText, setTranscriptText] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [ttsUnavailable, setTtsUnavailable] = useState(false); // shown when TTS cannot play
 
   // Refs
   const phaseRef = useRef<Phase>('init');
@@ -98,9 +99,10 @@ export const LiveInterviewSession = () => {
   // Auto-scroll transcript
   useEffect(() => { if (transcriptEl.current) transcriptEl.current.scrollTop = transcriptEl.current.scrollHeight; }, [chatLog]);
 
-  // ── TTS via Cloud API ──────────────────────────────────────────────
+  // ── TTS: Cloud API primary, browser speechSynthesis fallback ─────────────
   const speak = useCallback(async (text: string): Promise<void> => {
     return new Promise(async (resolve) => {
+      // Attempt Cloud TTS (enhancement — needs backend credentials)
       try {
         const res = await fetch(`${API_BASE}/api/interview/tts/`, {
           method: 'POST', headers: authHeaders(), body: JSON.stringify({ text }),
@@ -111,10 +113,29 @@ export const LiveInterviewSession = () => {
         if (audioRef.current) { audioRef.current.pause(); }
         const audio = new Audio(url);
         audioRef.current = audio;
-        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.onended = () => { URL.revokeObjectURL(url); setTtsUnavailable(false); resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); setTtsUnavailable(false); resolve(); };
         await audio.play();
-      } catch { resolve(); }
+        return; // Cloud TTS succeeded
+      } catch {
+        console.warn('[TTS] Cloud TTS unavailable, falling back to browser speechSynthesis');
+      }
+
+      // Fallback: browser Web Speech API (always works, no credentials)
+      if (window.speechSynthesis) {
+        try {
+          const utt = new SpeechSynthesisUtterance(text);
+          utt.rate = 0.9;
+          await new Promise<void>(r => { utt.onend = () => r(); utt.onerror = () => r(); window.speechSynthesis.speak(utt); });
+          setTtsUnavailable(false);
+        } catch {
+          setTtsUnavailable(true);
+        }
+      } else {
+        // No TTS available at all — show text banner so user can read the question
+        setTtsUnavailable(true);
+      }
+      resolve();
     });
   }, []);
 
@@ -519,6 +540,14 @@ export const LiveInterviewSession = () => {
               <h2 className="text-2xl md:text-3xl font-bold text-gray-800 leading-snug">{currentQ.question_text}</h2>
             </div>
 
+            {/* TTS unavailable banner — shown when neither Cloud nor browser TTS can play */}
+            {ttsUnavailable && (
+              <div className="w-full max-w-2xl px-4 py-3 bg-yellow-50 border border-yellow-300 rounded-xl text-center">
+                <p className="text-xs font-semibold text-yellow-700 mb-1">🔇 Audio unavailable — read the question above</p>
+                <p className="text-sm text-yellow-800 font-medium">{currentQ.question_text}</p>
+              </div>
+            )}
+
             {/* Orb */}
             <div className="relative w-[120px] h-[120px] flex items-center justify-center my-4">
               {phase === 'recording' && (
@@ -617,7 +646,7 @@ export const LiveInterviewSession = () => {
             {['speaking', 'countdown', 'recording'].includes(phase) && (
               <button onClick={() => { stopSpeaking(); if (mediaRecRef.current?.state === 'recording') { mediaRecRef.current.stop(); silenceActiveRef.current = false; } if (currentQRef.current) askQuestion(currentQRef.current); }}
                 className="px-4 py-2.5 text-gray-600 hover:text-gray-800 text-sm font-semibold transition hover:bg-gray-100 rounded-xl">
-                Try a different question
+                Repeat the question
               </button>
             )}
             {phase === 'recording' && (

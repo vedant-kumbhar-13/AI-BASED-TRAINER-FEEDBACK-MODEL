@@ -5,8 +5,8 @@
  *   1. POST /api/interview/start/  → { session_id, questions:[{id,order,text,type}] }
  *   2. POST /api/interview/submit-all/ → full evaluation
  *
- * Voice input now uses Cloud STT (MediaRecorder → backend transcription).
- * No API key required — works in Chrome, Edge, and other Chromium browsers.
+ * Voice input: Web Speech API (useSTT) is PRIMARY — works without any credentials.
+ * TTS: browser speechSynthesis (useTTS) is PRIMARY — Cloud TTS is optional enhancement.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -17,6 +17,8 @@ import {
   CheckCircle, ChevronRight, Edit3
 } from 'lucide-react';
 import AuthService from '../services/authService';
+import { useSTT } from '../hooks/useSTT';
+import { useTTS } from '../hooks/useTTS';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
@@ -87,25 +89,31 @@ export const InterviewSessionPage = () => {
   const [timer,            setTimer]            = useState(0);
   const [error,            setError]            = useState('');
 
-  // TTS
+  // TTS — browser Web Speech API (primary); Cloud TTS is attempted first as enhancement
   const [isSpeaking,  setIsSpeaking]  = useState(false);
   const [ttsEnabled,  setTtsEnabled]  = useState(true);
+  const browserTTS = useTTS();
+
+  // STT — Web Speech API (primary, no credentials required)
+  const {
+    transcript: sttTranscript,
+    isRecording,
+    isSupported: sttSupported,
+    startRecording: sttStart,
+    stopRecording: sttStop,
+    resetTranscript,
+  } = useSTT();
 
   // User-scoped localStorage key (C3 fix)
   const currentUser = AuthService.getUser();
   const STORAGE_KEY = getStorageKey(currentUser?.id ?? 'anon');
 
-  // Cloud STT recording state
-  const [isRecording,    setIsRecording]    = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [recordingTimer, setRecordingTimer] = useState(0);   // seconds elapsed while recording
-  const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
-  const audioChunksRef    = useRef<BlobPart[]>([]);
+  const [recordingTimer, setRecordingTimer] = useState(0);
   const audioPlayerRef    = useRef<HTMLAudioElement | null>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const questionIdAtRecordRef = useRef<string | null>(null); // C1 fix: snapshot question ID at record-stop
-  const navigatingRef = useRef(false); // Bug fix: prevents stale TTS onended from auto-starting recording
-  const MAX_RECORDING_SECS = 55; // auto-stop before Cloud STT 60s limit
+  const navigatingRef = useRef(false);
+  const MAX_RECORDING_SECS = 55;
   // Read input mode from navigation state (set on AIInterviewLanding)
   const inputMode = (location.state?.inputMode as 'voice' | 'text') || 'voice';
 
@@ -125,11 +133,8 @@ export const InterviewSessionPage = () => {
       recordingTimerRef.current = setInterval(() => {
         setRecordingTimer(prev => {
           if (prev + 1 >= MAX_RECORDING_SECS) {
-            // Auto-stop recording
-            if (mediaRecorderRef.current?.state === 'recording') {
-              mediaRecorderRef.current.stop();
-              setIsRecording(false);
-            }
+            // Auto-stop Web Speech recording
+            stopRecording();
             return 0;
           }
           return prev + 1;
@@ -155,23 +160,16 @@ export const InterviewSessionPage = () => {
 
   const clearSessionBackup = () => localStorage.removeItem(STORAGE_KEY);
 
-  // ── Mount: start interview + pre-load TTS voices ─────────────────────────
+  // ── Mount: start interview ───────────────────────────────────────────────
   useEffect(() => {
-    if (window.speechSynthesis && window.speechSynthesis.onvoiceschanged !== undefined) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
-    }
-
     // If user came from interview setup flow (fresh start), always clear old backup
     const isFreshStart = !!(location.state?.config || location.state?.resume);
     if (isFreshStart) {
       clearSessionBackup();
       startInterview();
       return () => {
-        window.speechSynthesis?.cancel();
+        browserTTS.stopSpeaking();
         audioPlayerRef.current?.pause();
-        if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
         if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       };
     }
@@ -195,71 +193,37 @@ export const InterviewSessionPage = () => {
 
     startInterview();
     return () => {
-      window.speechSynthesis?.cancel();
+      browserTTS.stopSpeaking();
       audioPlayerRef.current?.pause();
-      if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
   }, []);
 
-  // ── Cloud STT — MediaRecorder → background transcription ───────────────
-  const startRecording = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-      const recorder = new MediaRecorder(stream, { mimeType });
-      audioChunksRef.current = [];
-      // Snapshot the question ID NOW (at recording start) so it's never null for Q1
-      questionIdAtRecordRef.current = currentQuestion?.id ?? null;
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      recorder.onstop = () => {
-        stream.getTracks().forEach(t => t.stop());
-        sendAudioForTranscription();
-      };
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setIsRecording(true);
-      setError('');
-    } catch (err: any) {
-      setError(err.name === 'NotAllowedError'
-        ? 'Microphone access denied. Allow mic access in browser settings.'
-        : 'Could not access microphone.');
+  // ── STT: Web Speech API via useSTT hook (primary, no credentials needed) ──
+  // Keep transcript in sync with the textarea
+  useEffect(() => {
+    if (isRecording && sttTranscript) {
+      setCurrentAnswer(sttTranscript);
     }
-  }, [currentQuestion]);
+  }, [sttTranscript, isRecording]);
+
+  const startRecording = useCallback(() => {
+    if (!sttSupported) {
+      setError('Speech recognition is not supported in this browser. Please use Chrome or Edge, or switch to text mode.');
+      return;
+    }
+    resetTranscript();
+    sttStart();
+    setError('');
+  }, [sttSupported, sttStart, resetTranscript]);
 
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
+    const finalText = sttStop();
+    // Merge with any existing typed text
+    if (finalText) {
+      setCurrentAnswer(prev => prev.trim() ? `${prev.trim()} ${finalText}`.trim() : finalText);
     }
-  }, []);
-
-  const sendAudioForTranscription = useCallback(async () => {
-    if (!audioChunksRef.current.length) return;
-    const snapshotQId = questionIdAtRecordRef.current; // C1 fix: capture question context
-    setIsTranscribing(true);
-    try {
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-      const blob = new Blob(audioChunksRef.current, { type: mimeType });
-      const formData = new FormData();
-      formData.append('audio', blob, 'answer.webm');
-      const res = await fetch(`${API_BASE}/api/interview/transcribe/`, {
-        method: 'POST',
-        headers: AuthService.getAuthHeaders(),
-        body: formData,
-      });
-      const data = await res.json();
-      if (res.ok && data.text) {
-        // C1 fix: only apply transcript if we're still on the same question
-        if (snapshotQId && questions[currentIdx]?.id !== snapshotQId) {
-          console.warn('[STT] Discarding late transcript — question already changed');
-        } else {
-          setCurrentAnswer(prev => prev.trim() ? `${prev.trim()} ${data.text}` : data.text);
-        }
-      } else if (!res.ok) { setError(`Transcription error: ${data.error || 'Unknown error'}`); }
-    } catch { setError('Transcription failed. Check connection and try again.'); }
-    finally { setIsTranscribing(false); }
-  }, [questions, currentIdx]);
+  }, [sttStop]);
 
   // ── Auto-read question when it changes ───────────────────────────────────
   useEffect(() => {
@@ -268,49 +232,54 @@ export const InterviewSessionPage = () => {
     }
   }, [currentIdx, phase]);
 
-  // ── TTS (Cloud TTS with browser fallback) ── M4 fix: wrapped in useCallback
+  // ── TTS: browser Web Speech API (primary) with optional Cloud TTS upgrade ──
   const speakText = useCallback(async (text: string) => {
     if (!ttsEnabled || !text) return;
     setIsSpeaking(true);
+
+    const onDone = () => {
+      setIsSpeaking(false);
+      if (inputMode === 'voice' && !navigatingRef.current) setTimeout(() => startRecording(), 500);
+    };
+
+    // Attempt Cloud TTS first (enhancement — requires backend credentials)
     try {
-      const token = AuthService.getAuthHeaders();
       const res = await fetch(`${API_BASE}/api/interview/tts/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...token },
+        headers: { 'Content-Type': 'application/json', ...AuthService.getAuthHeaders() },
         body: JSON.stringify({ text }),
       });
-      if (!res.ok) throw new Error('TTS API failed');
+      if (!res.ok) throw new Error('Cloud TTS unavailable');
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioPlayerRef.current = audio;
-      audio.playbackRate = 1.0;
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        setIsSpeaking(false);
-        // Only auto-start recording if we haven't navigated away from this question
-        if (inputMode === 'voice' && !navigatingRef.current) setTimeout(() => startRecording(), 500);
-      };
-      audio.onerror = () => { URL.revokeObjectURL(url); setIsSpeaking(false); };
+      audio.onended = () => { URL.revokeObjectURL(url); onDone(); };
+      audio.onerror = () => { URL.revokeObjectURL(url); onDone(); };
       await audio.play();
+      return; // Cloud TTS succeeded — skip browser fallback
     } catch (err) {
-      console.warn('Cloud TTS failed, falling back to browser TTS', err);
-      // Graceful fallback to browser SpeechSynthesis
+      console.warn('[TTS] Cloud TTS failed, using browser Web Speech API', err);
+    }
+
+    // PRIMARY fallback: browser Web Speech API via useTTS hook (always works)
+    try {
+      await browserTTS.speak(text);
+    } catch {
+      // last-resort raw utterance
       if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
         const utt = new SpeechSynthesisUtterance(text);
         utt.rate = 0.9;
-        utt.onend = () => { setIsSpeaking(false); if (inputMode === 'voice' && !navigatingRef.current) setTimeout(() => startRecording(), 500); };
-        utt.onerror = () => setIsSpeaking(false);
-        window.speechSynthesis.speak(utt);
-      } else { setIsSpeaking(false); }
+        await new Promise<void>(r => { utt.onend = () => r(); utt.onerror = () => r(); window.speechSynthesis.speak(utt); });
+      }
     }
-  }, [ttsEnabled, inputMode, startRecording]);
+    onDone();
+  }, [ttsEnabled, inputMode, startRecording, browserTTS]);
 
   const stopSpeaking = () => {
     audioPlayerRef.current?.pause();
     audioPlayerRef.current = null;
-    window.speechSynthesis?.cancel();
+    browserTTS.stopSpeaking();
     setIsSpeaking(false);
   };
 
@@ -416,7 +385,7 @@ export const InterviewSessionPage = () => {
         answers:    collectedAnswers,
       });
       clearSessionBackup(); // BUG-09: clear saved session on successful submit
-      navigate('/ai-interview-feedback', { state: { evaluation, sessionId } });
+      navigate('/ai-interview-feedback', { state: { evaluation, sessionId, questions } });
     } catch (err: any) {
       setError(err.message || 'Submission failed. Please try again.');
       setPhase('review');

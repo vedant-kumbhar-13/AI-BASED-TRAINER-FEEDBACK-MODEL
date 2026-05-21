@@ -12,35 +12,235 @@ Endpoints:
   POST /api/aptitude/admin/save-generated/      ← saves all at once
 """
 
+import json
+import re
 import logging
+from typing import Any
 
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.contrib.admin.views.decorators import staff_member_required
-from django.utils.decorators import method_decorator
 
 from .models import AptitudeTopic, AptitudeQuestion
 
 logger = logging.getLogger(__name__)
 
+# ── Allowed aptitude topic names whitelist ───────────────────────────────────
+# Every legitimate aptitude/reasoning topic that can appear in placement exams.
+# The AI buttons will ONLY work for names that are either in this set OR match
+# the pattern check below. This prevents searching YouTube for "vedant" etc.
+
+VALID_APTITUDE_TOPICS = {
+    # Quantitative Aptitude
+    'percentage', 'percentages', 'profit and loss', 'simple interest',
+    'compound interest', 'ratio and proportion', 'ratio & proportion',
+    'time and work', 'time & work', 'time speed distance',
+    'time, speed and distance', 'speed distance time', 'pipes and cisterns',
+    'pipes & cisterns', 'mixtures and alligations', 'number system',
+    'number systems', 'hcf and lcm', 'hcf & lcm', 'lcm and hcf',
+    'averages', 'average', 'ages', 'problems on ages', 'partnership',
+    'boats and streams', 'trains', 'problems on trains', 'clocks',
+    'calendar', 'calendars', 'mensuration', 'permutation and combination',
+    'permutations and combinations', 'probability', 'algebra',
+    'quadratic equations', 'surds and indices', 'simplification',
+    'approximation', 'number series', 'missing number series',
+    'data sufficiency', 'square roots', 'cube roots', 'fractions',
+    'decimals', 'arithmetic', 'geometry', 'trigonometry',
+    # Data Interpretation
+    'bar graphs', 'bar graph', 'line charts', 'line graph', 'pie charts',
+    'pie chart', 'tables', 'data tables', 'histogram', 'histograms',
+    'caselets', 'mixed graphs', 'radar charts', 'data interpretation',
+    'tables and data tables',
+    # Logical Reasoning
+    'coding and decoding', 'coding decoding', 'blood relations',
+    'seating arrangement', 'syllogisms', 'syllogism', 'direction sense',
+    'logical puzzles', 'series completion', 'analogy', 'analogies',
+    'odd one out', 'classification', 'statement and conclusions',
+    'statement and assumptions', 'cause and effect', 'logical reasoning',
+    'input output', 'ranking and order', 'inequalities', 'puzzles',
+    'alpha numeric series', 'alphanumeric series',
+    # Verbal Ability
+    'reading comprehension', 'sentence correction', 'fill in the blanks',
+    'para jumbles', 'cloze test', 'error spotting', 'idioms and phrases',
+    'one word substitution', 'synonyms', 'antonyms', 'vocabulary',
+    'verbal ability', 'grammar', 'active passive voice',
+    'direct indirect speech',
+    # Computer Aptitude
+    'computer fundamentals', 'operating systems', 'networking basics',
+    'database concepts', 'computer aptitude', 'ms office',
+    'internet concepts', 'computer hardware', 'computer software',
+    # General Aptitude
+    'general aptitude', 'general knowledge', 'current affairs',
+}
+
+# ── Regex patterns ───────────────────────────────────────────────────────────
+
+# Allowed characters: letters, digits, spaces, &, -, comma, dot, /
+_TOPIC_NAME_PATTERN = re.compile(r'^[A-Za-z][A-Za-z0-9 &\-,\./]{1,59}$')
+
+# Detects "First Last" person-name pattern:
+#   Exactly 2 Title-case tokens, neither is a domain word, not in whitelist
+_PERSON_NAME_RE = re.compile(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$')
+
+# Any word that can legitimately appear in an aptitude topic name.
+# If EITHER word in a 2-word name is here → it cannot be a person name.
+_SUBJECT_CONNECTORS = {
+    # conjunctions / prepositions
+    'and', 'or', 'of', 'the', 'in', 'on', 'by', 'for', 'to', 'with',
+    'vs', 'versus',
+    # adjectives used in topic names
+    'simple', 'compound', 'linear', 'quadratic', 'mixed', 'missing',
+    'direct', 'indirect', 'active', 'passive', 'general', 'verbal',
+    'logical', 'quantitative', 'alpha', 'numeric', 'alphanumeric',
+    'digital', 'basic', 'advanced', 'applied',
+    # math / quant domain nouns
+    'interest', 'percentage', 'profit', 'loss', 'ratio', 'proportion',
+    'speed', 'distance', 'time', 'work', 'pipes', 'boats', 'trains',
+    'clocks', 'calendar', 'probability', 'arithmetic', 'algebra',
+    'geometry', 'trigonometry', 'mensuration', 'averages', 'fractions',
+    'decimals', 'indices', 'surds', 'roots', 'equations', 'simplification',
+    'approximation', 'partnership', 'alligation', 'alligations', 'cisterns',
+    # reasoning / DI domain nouns
+    'series', 'number', 'system', 'problems', 'relations', 'reasoning',
+    'ability', 'aptitude', 'interpretation', 'analysis', 'arrangement',
+    'completion', 'sense', 'comprehension', 'combination', 'substitution',
+    'fundamentals', 'concepts', 'basics', 'charts', 'graphs', 'tables',
+    'streams', 'puzzles', 'jumbles', 'sufficiency', 'syllogism',
+    'inequalities', 'classification', 'analogies', 'caselets', 'histogram',
+    'input', 'output', 'ranking', 'order',
+    # verbal domain nouns
+    'vocabulary', 'synonyms', 'antonyms', 'grammar', 'speech', 'voice',
+    'encoding', 'decoding', 'correction', 'spotting', 'idioms', 'phrases',
+    # computer / technical
+    'computer', 'internet', 'hardware', 'software', 'networking', 'database',
+    'operating', 'statement', 'conclusions', 'assumptions', 'cause', 'effect',
+    'detection',
+}
+
+
+def _looks_like_person_name(name: str) -> bool:
+    """
+    Returns True only when 'name' is almost certainly a human name.
+
+    Checks (all must pass):
+      1. Exactly 2 tokens.
+      2. Both tokens are Title-Case (regex match).
+      3. Full name IS NOT in the VALID_APTITUDE_TOPICS whitelist.
+      4. Neither token appears in _SUBJECT_CONNECTORS.
+
+    This means "Simple Interest", "Logical Reasoning", "Number System" etc.
+    are all correctly passed as valid topics.
+    """
+    name_stripped = name.strip()
+    tokens = name_stripped.split()
+
+    if len(tokens) != 2:
+        return False
+
+    if not _PERSON_NAME_RE.match(name_stripped):
+        return False
+
+    # Whitelist check FIRST — fastest exit for known-good topics
+    if name_stripped.lower() in VALID_APTITUDE_TOPICS:
+        return False
+
+    t0, t1 = tokens[0].lower(), tokens[1].lower()
+    if t0 in _SUBJECT_CONNECTORS or t1 in _SUBJECT_CONNECTORS:
+        return False
+
+    return True
+
+
+def _validate_topic_name(name: str) -> str | None:
+    """
+    Returns an error string if the name is not a valid aptitude topic,
+    or None if it passes all checks.
+
+    Rules (in order):
+    1. Must match allowed-character pattern.
+    2. Must not be a pure number.
+    3. Must not look like "FirstName LastName" (person name).
+    4. Single-word names must be in the whitelist.
+    5. Multi-word names must either be in the whitelist OR contain at least one
+       subject keyword — this catches "foo bar" style gibberish.
+    """
+    name_lower = name.lower().strip()
+
+    # Rule 1 — character set
+    if not _TOPIC_NAME_PATTERN.match(name):
+        return (
+            f'"{name}" contains invalid characters. '
+            'Use only letters, digits, spaces, &, hyphens, commas, or dots.'
+        )
+
+    # Rule 2 — not a number
+    if name_lower.replace(' ', '').isdigit():
+        return f'"{name}" is a number, not an aptitude topic.'
+
+    # Rule 3 — person name detection  ← THIS IS THE NEW CHECK
+    if _looks_like_person_name(name):
+        return (
+            f'"{name}" looks like a person\'s name, not an aptitude topic. '
+            'Topic names must be academic subjects like "Percentage", '
+            '"Time and Work", "Blood Relations", or "Logical Reasoning". '
+            'If this is intentional and truly a subject name, please contact '
+            'the developer to add it to the approved list.'
+        )
+
+    tokens = name_lower.split()
+    is_single_word = len(tokens) == 1
+    in_whitelist = name_lower in VALID_APTITUDE_TOPICS
+
+    # Rule 4 — single-word must be whitelisted
+    if is_single_word and not in_whitelist:
+        return (
+            f'"{name}" is not a recognised aptitude topic. '
+            'Single-word names must be a known subject '
+            '(e.g. "Percentage", "Probability", "Averages", "Arithmetic"). '
+            'For multi-word topics use at least two words (e.g. "Time and Work").'
+        )
+
+    # Rule 5 — multi-word gibberish check (e.g. "foo bar", "hello world")
+    if not is_single_word and not in_whitelist:
+        has_subject_word = any(t in _SUBJECT_CONNECTORS for t in tokens)
+        if not has_subject_word:
+            return (
+                f'"{name}" does not appear to be a recognised aptitude subject. '
+                'Please use a standard subject name such as "Coding and Decoding", '
+                '"Data Interpretation", or "Reading Comprehension". '
+                'If this is a valid new topic, add it to the VALID_APTITUDE_TOPICS '
+                'list in admin_views.py.'
+            )
+
+    return None  # passes all checks
+
 
 def _get_topic_name(request) -> tuple[str, JsonResponse | None]:
-    """Extract and validate topic_name from POST body."""
-    import json as _json
+    """Extract AND validate topic_name from POST body."""
     try:
-        body = _json.loads(request.body)
+        body = json.loads(request.body)
     except Exception:
         body = {}
     name = body.get('topic_name', '').strip()
     if not name:
         return '', JsonResponse({'error': 'topic_name is required.'}, status=400)
+
+    error = _validate_topic_name(name)
+    if error:
+        return '', JsonResponse({
+            'error': error,
+            'hint': (
+                'Valid examples: "Percentage", "Time and Work", "Blood Relations", '
+                '"Logical Reasoning", "Bar Graphs". '
+                'Please enter a real aptitude/reasoning subject.'
+            ),
+        }, status=422)
+
     return name, None
 
 
 # ── 1. Generate description ──────────────────────────────────────
 
-@csrf_exempt
 @require_POST
 @staff_member_required
 def generate_description(request):
@@ -64,7 +264,6 @@ def generate_description(request):
 
 # ── 2. Generate quiz questions ───────────────────────────────────
 
-@csrf_exempt
 @require_POST
 @staff_member_required
 def generate_questions(request):
@@ -72,16 +271,18 @@ def generate_questions(request):
     POST { "topic_name": "Percentage", "count": 10 }
     → { "questions": [{ text, option_a, option_b, option_c, option_d, correct_answer }, ...] }
     """
-    import json as _json
     topic_name, err = _get_topic_name(request)
     if err:
         return err
 
     try:
-        body = _json.loads(request.body)
+        body = json.loads(request.body)
     except Exception:
         body = {}
-    count = min(int(body.get('count', 10)), 20)
+    try:
+        count = min(int(body.get('count', 10)), 20)
+    except (ValueError, TypeError):
+        count = 10
 
     try:
         from .ai_service import AptitudeAIService
@@ -95,7 +296,6 @@ def generate_questions(request):
 
 # ── 3. Fetch YouTube videos ──────────────────────────────────────
 
-@csrf_exempt
 @require_POST
 @staff_member_required
 def generate_videos(request):
@@ -103,16 +303,18 @@ def generate_videos(request):
     POST { "topic_name": "Percentage", "count": 5 }
     → { "videos": [{ youtube_id, title, thumbnail_url, channel_name, order }, ...] }
     """
-    import json as _json
     topic_name, err = _get_topic_name(request)
     if err:
         return err
 
     try:
-        body = _json.loads(request.body)
+        body = json.loads(request.body)
     except Exception:
         body = {}
-    count = min(int(body.get('count', 5)), 10)
+    try:
+        count = min(int(body.get('count', 5)), 10)
+    except (ValueError, TypeError):
+        count = 5
 
     try:
         from .ai_service import AptitudeAIService
@@ -126,7 +328,6 @@ def generate_videos(request):
 
 # ── 4. Save all generated content at once ───────────────────────
 
-@csrf_exempt
 @require_POST
 @staff_member_required
 def save_generated(request):
@@ -143,9 +344,8 @@ def save_generated(request):
     to learning.TopicVideo, and syncs everything back to learning.Topic so
     the content appears on the Learning page immediately.
     """
-    import json as _json
     try:
-        body = _json.loads(request.body)
+        body = json.loads(request.body)
     except Exception:
         return JsonResponse({'error': 'Invalid JSON body.'}, status=400)
 
@@ -158,7 +358,7 @@ def save_generated(request):
     except AptitudeTopic.DoesNotExist:
         return JsonResponse({'error': f'Topic {topic_id} not found.'}, status=404)
 
-    saved = {'description': False, 'questions_added': 0, 'videos_saved': 0}
+    saved: dict[str, Any] = {'description': False, 'questions_added': 0, 'videos_saved': 0}
 
     # ── 1. Update description / definition ──────────────────────
     definition = body.get('definition', '').strip()

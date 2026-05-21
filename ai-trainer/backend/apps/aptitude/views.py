@@ -1,13 +1,14 @@
 """
 Aptitude API Views
 ──────────────────
-Public endpoints (AllowAny) so quizzes are accessible without login.
+Public read endpoints (AllowAny): topic list + question fetch.
+Submit endpoint requires authentication (IsAuthenticated) to prevent answer scraping.
 Questions are randomised per request using Django's ORDER BY RANDOM().
 """
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import AptitudeTopic, AptitudeQuestion
@@ -53,7 +54,10 @@ def get_questions(request):
     """
     topic_id   = request.query_params.get('topic_id')
     topic_name = request.query_params.get('topic_name', '').strip()
-    count      = int(request.query_params.get('count', 10))
+    try:
+        count  = int(request.query_params.get('count', 10))
+    except (ValueError, TypeError):
+        count  = 10
 
     if not topic_id and not topic_name:
         return Response(
@@ -98,7 +102,7 @@ def get_questions(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def submit_quiz(request):
     """
     POST /api/aptitude/submit/
@@ -151,3 +155,24 @@ def submit_quiz(request):
         'totalQuestions': total,
         'results': results,
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_history(request):
+    """
+    GET /api/aptitude/history/
+    Returns the last 50 quiz attempts for the authenticated user.
+    """
+    from apps.aptitude.models import QuizAttempt
+    attempts = QuizAttempt.objects.filter(user=request.user).order_by('-attempted_at')[:50]
+    data = [{
+        'id': a.id,
+        'topic_id': a.topic_id,
+        'topic_name': a.topic.name,
+        'score': a.score,
+        'correct_answers': a.correct_answers,
+        'total_questions': a.total_questions,
+        'attempted_at': a.attempted_at.isoformat(),
+    } for a in attempts]
+    return Response({'history': data, 'count': len(data)})

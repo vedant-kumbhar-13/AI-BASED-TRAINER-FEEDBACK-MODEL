@@ -213,6 +213,15 @@
       credentials: 'include',
       body: JSON.stringify(body),
     });
+    if (!resp.ok) {
+      // Try to extract error from JSON body; fall back to HTTP status
+      let errMsg = `HTTP ${resp.status}`;
+      try {
+        const errData = await resp.json();
+        if (errData.error) errMsg = errData.error;
+      } catch (_) {}
+      throw new Error(errMsg);
+    }
     return resp.json();
   }
 
@@ -225,11 +234,6 @@
     ['btn-gen-desc', 'btn-gen-q', 'btn-gen-vid', 'btn-save-vid'].forEach(id => setBtn(id, true));
   }
 
-  function enableAll() {
-    ['btn-gen-desc', 'btn-gen-q', 'btn-gen-vid'].forEach(id => setBtn(id, false));
-    // btn-save-vid enabled separately only when videos exist
-  }
-
   // Stores the last fetched videos so we can persist them
   let _fetchedVideos = [];
 
@@ -239,6 +243,29 @@
     return m ? parseInt(m[1], 10) : null;
   }
 
+  // ── U1: Detect Add page (no topic ID) and warn ──────────────
+  const _isAddPage = !getTopicId();
+
+  function enableAll() {
+    ['btn-gen-desc', 'btn-gen-q'].forEach(id => setBtn(id, false));
+    // Only re-enable video buttons if we're on the edit page (not Add)
+    if (!_isAddPage) {
+      setBtn('btn-gen-vid', false);
+    }
+    // btn-save-vid enabled separately only when videos exist
+  }
+
+  if (_isAddPage) {
+    // Disable video fetch/save on Add page — topic must be saved first
+    const vidBtn = document.getElementById('btn-gen-vid');
+    const saveVidBtn = document.getElementById('btn-save-vid');
+    if (vidBtn) { vidBtn.disabled = true; vidBtn.title = 'Save the topic first, then fetch videos on the edit page.'; }
+    if (saveVidBtn) { saveVidBtn.disabled = true; }
+    // Show a note in the status area
+    const statusEl = document.getElementById('ai-status');
+    if (statusEl) statusEl.innerHTML = 'Ready — ⚠️ <strong>Video buttons are disabled until you save the topic first.</strong> You can generate Description and Questions now.';
+  }
+
   /* ── 1. Generate Description ───────────────────────────── */
   document.getElementById('btn-gen-desc').addEventListener('click', async () => {
     const name = getTopicName();
@@ -246,7 +273,6 @@
 
     disableAll();
     hidePreview();
-    setStatus('<span class="spinner"></span> Generating description with Gemini…');
     document.getElementById('ai-status').innerHTML = '⏳ Generating description with Gemini AI…';
 
     try {
@@ -441,16 +467,16 @@
       if (addLink) addLink.click();
 
       // Fill fields after a short delay for DOM to update
+      // B4 fix: increment TOTAL_FORMS inside callback after verifying row exists
       setTimeout(() => {
         Object.entries(fields).forEach(([id, val]) => {
           const el = document.getElementById(id);
           if (el) el.value = val;
         });
+        // Only increment TOTAL_FORMS after we've confirmed the row is in the DOM
+        totalEl.value = parseInt(totalEl.value, 10) + 1;
       }, 100 * (idx + 1));
     });
-
-    // Update TOTAL_FORMS count
-    totalEl.value = currentTotal + questions.length;
   }
 
   /* ── Helper: escape HTML for display ──────────────────── */

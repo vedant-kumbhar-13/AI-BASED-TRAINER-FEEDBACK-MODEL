@@ -21,6 +21,15 @@ def synthesize_speech(text: str, voice_name: str | None = None) -> bytes:
     
     Tries each voice in VOICE_FALLBACKS if the primary voice fails (E2 fix).
     """
+    import os
+    # Graceful credential check — clear error instead of cryptic SDK exception
+    if not os.environ.get('GOOGLE_APPLICATION_CREDENTIALS') and not os.environ.get('GOOGLE_CLOUD_PROJECT'):
+        raise RuntimeError(
+            "Google Cloud credentials not configured. "
+            "Set GOOGLE_APPLICATION_CREDENTIALS in your .env file, "
+            "or switch to Web Speech API mode (browser-based, no credentials needed)."
+        )
+
     voices_to_try = [voice_name] if voice_name else list(VOICE_FALLBACKS)
 
     for vname in voices_to_try:

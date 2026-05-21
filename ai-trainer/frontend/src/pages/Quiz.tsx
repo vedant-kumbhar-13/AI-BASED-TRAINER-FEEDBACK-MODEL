@@ -154,9 +154,13 @@ export const Quiz = () => {
         questions.map(q => [q.id, answers[q.id] ?? null])
       );
       try {
+        const token = localStorage.getItem('access_token');
         const res = await fetch(`${API_BASE}/aptitude/submit/`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
           body: JSON.stringify({ answers: fullAnswers }),
         });
         if (res.ok) {
@@ -276,7 +280,7 @@ export const Quiz = () => {
             <div className="lg:col-span-2 space-y-6">
               {/* Question Card */}
               <QuestionCard
-                question={currentQuestion}
+                question={currentQuestion as any}
                 questionNumber={currentQuestionIndex + 1}
                 totalQuestions={questions.length}
                 selectedAnswer={answers[currentQuestion.id] || null}

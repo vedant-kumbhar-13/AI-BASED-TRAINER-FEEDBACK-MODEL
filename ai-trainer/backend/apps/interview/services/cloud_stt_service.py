@@ -11,6 +11,14 @@ logger = logging.getLogger(__name__)
 _REGION = getattr(settings, 'GOOGLE_CLOUD_REGION', 'us-central1')
 
 def transcribe_audio_bytes(audio_bytes: bytes, language_code: str = "en-IN") -> str:
+    # Graceful credential check — clear error instead of cryptic SDK exception
+    if not os.environ.get('GOOGLE_APPLICATION_CREDENTIALS') and not os.environ.get('GOOGLE_CLOUD_PROJECT'):
+        raise RuntimeError(
+            "Google Cloud credentials not configured. "
+            "Set GOOGLE_APPLICATION_CREDENTIALS in your .env file, "
+            "or switch to Web Speech API mode (browser-based, no credentials needed)."
+        )
+
     from google.cloud.speech_v2 import SpeechClient
     from google.cloud.speech_v2.types import cloud_speech
     from google.api_core.client_options import ClientOptions

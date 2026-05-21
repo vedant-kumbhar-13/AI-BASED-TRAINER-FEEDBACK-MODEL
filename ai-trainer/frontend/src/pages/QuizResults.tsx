@@ -16,6 +16,7 @@ interface QuizResultsState {
     correctAnswer: string;
     isCorrect: boolean;
   }[];
+  topicName?: string;       // passed from Quiz.tsx for slug-based topics
 }
 
 export const QuizResults = () => {
@@ -23,7 +24,11 @@ export const QuizResults = () => {
   const location = useLocation();
   const state = location.state as QuizResultsState | null;
 
-  const topic = topicId ? getTopicById(parseInt(topicId)) : null;
+  const staticTopic = topicId ? getTopicById(parseInt(topicId)) : null;
+  // For slug-based quizzes, topicId is "slug/<name>" and staticTopic will be null.
+  // Use topicName from state as fallback.
+  const topicName = staticTopic?.name || state?.topicName || 'Quiz';
+  const topicIcon = staticTopic?.icon || '📝';
 
   // Prefer questions passed via state (includes API questions with options)
   // Fall back to static local data for older navigation paths
@@ -48,7 +53,7 @@ export const QuizResults = () => {
     return apiR ? { ...q, correctAnswer: apiR.correctAnswer } : q;
   });
 
-  if (!topic || !state) {
+  if (!state) {
     return (
       <div className="min-h-screen bg-gray-50">
         <Navigation />
@@ -156,13 +161,13 @@ export const QuizResults = () => {
           {/* Action Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 mb-8">
             <Link
-              to={`/quiz/${topicId}`}
+              to={topicId && !topicId.startsWith('slug/') ? `/quiz/${topicId}` : `/quiz/slug/${topicId?.replace('slug/', '')}`}
               className="flex-1 px-6 py-3 bg-primary hover:bg-primary-dark text-white font-bold text-center rounded-lg transition"
             >
               🔄 Retake Quiz
             </Link>
             <Link
-              to={`/learning/${topicId}`}
+              to={topicId && !topicId.startsWith('slug/') ? `/learning/${topicId}` : `/learning/${topicName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`}
               className="flex-1 px-6 py-3 border-2 border-primary text-primary hover:bg-primary-light font-bold text-center rounded-lg transition"
             >
               📖 Review Topic

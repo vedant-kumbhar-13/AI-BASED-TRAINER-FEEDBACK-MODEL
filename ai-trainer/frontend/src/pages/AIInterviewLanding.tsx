@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Navigation } from '../components/dashboard/Navigation';
-import { Sparkles, Upload, Zap, Users, Code, MessageSquare, ArrowRight } from 'lucide-react';
+import { Sparkles, Upload, Zap, Users, Code, MessageSquare, ArrowRight, Mic } from 'lucide-react';
 
 const INTERVIEW_TYPES = [
   {
@@ -119,6 +119,15 @@ export const AIInterviewLanding = () => {
                   >
                     <Zap className="w-5 h-5" />
                     Quick Interview
+                  </button>
+
+                  <button
+                    onClick={handleLiveInterview}
+                    className="flex items-center justify-center gap-3 px-8 py-4 border-2 border-gray-300 text-gray-700 font-bold rounded-xl hover:border-primary hover:text-primary hover:bg-primary-light transition-all"
+                  >
+                    <Mic className="w-5 h-5" />
+                    Live Voice Interview
+                    <span className="text-xs font-semibold px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full">Beta</span>
                   </button>
                 </div>
               </div>

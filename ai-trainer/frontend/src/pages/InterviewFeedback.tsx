@@ -435,6 +435,12 @@ export const InterviewFeedback = () => {
   // ── Per-question results from submit-all ──
   const questionResults: any[] = evalData?.question_results || [];
 
+  // Build a lookup so accordion headers show real question text
+  const questionsLookup: Record<number, string> = {};
+  (location.state?.questions || []).forEach((q: any, i: number) => {
+    questionsLookup[i + 1] = q.text;
+  });
+
   const getScoreColor = (score: number) => {
     if (score >= 80) return 'text-green-500';
     if (score >= 60) return 'text-yellow-500';
@@ -597,7 +603,7 @@ export const InterviewFeedback = () => {
                           Q{qr.question_index}
                         </span>
                         <p className="font-medium text-gray-800 text-sm line-clamp-1">
-                          {qr.strength || 'See feedback below'}
+                          {questionsLookup[qr.question_index] || 'Question ' + qr.question_index}
                         </p>
                       </div>
                       <div className="flex items-center gap-3">
