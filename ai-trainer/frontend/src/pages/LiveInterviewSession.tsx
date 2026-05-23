@@ -16,7 +16,7 @@ interface Question { id: string; question_text: string; question_number: number;
 interface ChatMsg { role: 'interviewer' | 'you'; text: string; qNum?: number; }
 type Phase = 'init' | 'loading' | 'speaking' | 'countdown' | 'recording' | 'processing' | 'done' | 'submitting' | 'error';
 
-const SILENCE_MS = 3000;
+const SILENCE_MS = 2500;  // 2.5s silence triggers auto-submit (tuned for interviews)
 const MAX_DURATION_SECS = 300;  // 5 minutes max
 const MIN_SUBMIT_SECS = 60;    // Submit enabled after 1 min
 
@@ -70,6 +70,8 @@ export const LiveInterviewSession = () => {
   const silenceRafRef = useRef<number>(0);
   const silenceActiveRef = useRef(false);
   const finalizeCalledRef = useRef(false); // M7 fix: prevent double finalizeAnswer calls
+  const browserTranscriptRef = useRef<string>(''); // Browser STT fallback transcript
+  const speechRecRef = useRef<any>(null); // SpeechRecognition instance
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => { currentQRef.current = currentQ; }, [currentQ]);
@@ -156,6 +158,10 @@ export const LiveInterviewSession = () => {
       mediaRecRef.current?.stream?.getTracks().forEach(t => t.stop());
     } catch { /* already stopped */ }
     mediaRecRef.current = null;
+    // Stop browser SpeechRecognition
+    try { speechRecRef.current?.stop(); } catch { /* already stopped */ }
+    speechRecRef.current = null;
+    browserTranscriptRef.current = '';
   }, []);
 
   // ── STT via MediaRecorder + Cloud API ────────────────────────────
@@ -172,6 +178,44 @@ export const LiveInterviewSession = () => {
       rec.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mediaRecRef.current = rec;
       rec.start();
+
+      // ── Browser SpeechRecognition fallback (runs in parallel) ──
+      // Captures live transcript so we have text even if Cloud STT fails
+      browserTranscriptRef.current = '';
+      try {
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (SpeechRecognition) {
+          const sr = new SpeechRecognition();
+          sr.continuous = true;
+          sr.interimResults = true;
+          sr.lang = 'en-IN';
+          let finalTranscript = '';
+          sr.onresult = (event: any) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              if (event.results[i].isFinal) {
+                finalTranscript += event.results[i][0].transcript + ' ';
+              } else {
+                interim += event.results[i][0].transcript;
+              }
+            }
+            browserTranscriptRef.current = (finalTranscript + interim).trim();
+            // Show live transcript in the UI while recording
+            if (browserTranscriptRef.current) {
+              setTranscriptText(browserTranscriptRef.current);
+            }
+          };
+          sr.onerror = () => { /* silently ignore — Cloud STT is primary */ };
+          sr.onend = () => {
+            // Auto-restart if still recording (browser stops after ~60s silence)
+            if (silenceActiveRef.current) {
+              try { sr.start(); } catch { /* already stopped */ }
+            }
+          };
+          sr.start();
+          speechRecRef.current = sr;
+        }
+      } catch { /* Browser doesn't support SpeechRecognition — Cloud STT only */ }
 
       // ── Auto-Calibrating Voice Activity Detector (VAD) ──
       // Phase 1: Measure mic baseline noise for ~1 second
@@ -198,9 +242,9 @@ export const LiveInterviewSession = () => {
 
       // Calibration state
       const calibrationStart = Date.now();
-      const CALIBRATION_MS = 1200; // measure baseline for 1.2 seconds
+      const CALIBRATION_MS = 800; // measure baseline for 0.8 seconds (faster start)
       let baselineSamples: number[] = [];
-      let dynamicThreshold = 15; // fallback if calibration fails
+      let dynamicThreshold = 12; // fallback if calibration fails
       let isCalibrated = false;
 
       // Detection state
@@ -232,12 +276,13 @@ export const LiveInterviewSession = () => {
         if (!isCalibrated) {
           baselineSamples.push(energy);
           if (Date.now() - calibrationStart >= CALIBRATION_MS) {
-            // I5 fix: use median-based threshold instead of mean+2σ (resistant to outliers)
+            // Use 75th percentile for noise-resistant threshold (better than median in noisy rooms)
             const sorted = [...baselineSamples].sort((a, b) => a - b);
-            const median = sorted[Math.floor(sorted.length / 2)];
-            dynamicThreshold = Math.max(8, median * 2.5);
+            const p75 = sorted[Math.floor(sorted.length * 0.75)];
+            dynamicThreshold = Math.max(6, p75 * 2.2);
             isCalibrated = true;
-            console.log(`[VAD] Calibrated: median=${median.toFixed(1)}, threshold=${dynamicThreshold.toFixed(1)}`);
+            lastSpeechTime = Date.now(); // reset so silence timer starts fresh after calibration
+            console.log(`[VAD] Calibrated: p75=${p75.toFixed(1)}, threshold=${dynamicThreshold.toFixed(1)}`);
           }
           silenceRafRef.current = requestAnimationFrame(check);
           return;
@@ -247,8 +292,8 @@ export const LiveInterviewSession = () => {
         if (energy > dynamicThreshold) {
           lastSpeechTime = Date.now();
           speechFrameCount++;
-          // Need ~250ms of sustained voice to arm (prevents coughs/clicks)
-          if (speechFrameCount > 15) {
+          // Need ~167ms of sustained voice to arm (10 frames at ~60fps)
+          if (speechFrameCount > 10) {
             hasSpokenEnough = true;
           }
         } else {
@@ -256,8 +301,9 @@ export const LiveInterviewSession = () => {
           speechFrameCount = Math.max(0, speechFrameCount - 2);
         }
 
-        // Trigger silence detection only after confirmed speech
-        if (hasSpokenEnough && Date.now() - lastSpeechTime > SILENCE_MS) {
+        // Trigger silence detection only after confirmed speech AND minimum 2s recording
+        const elapsedRecording = Date.now() - recordingStart;
+        if (hasSpokenEnough && elapsedRecording > 2000 && Date.now() - lastSpeechTime > SILENCE_MS) {
           finalizeAnswer();
           return;
         }
@@ -276,13 +322,28 @@ export const LiveInterviewSession = () => {
     try { silenceStreamRef.current?.getTracks().forEach(t => t.stop()); } catch { /* already stopped */ }
     silenceStreamRef.current = null;
 
+    // Stop browser SpeechRecognition
+    try { speechRecRef.current?.stop(); } catch { /* already stopped */ }
+    speechRecRef.current = null;
+
+    // Capture browser transcript before async operations
+    const browserFallback = browserTranscriptRef.current || '';
+
     setTranscriptText(''); // I7 fix: clear transcript immediately before async STT
     return new Promise(async (resolve) => {
       const rec = mediaRecRef.current;
-      if (!rec || rec.state === 'inactive') { resolve(''); return; }
+      if (!rec || rec.state === 'inactive') {
+        // No recording — use browser transcript if available
+        resolve(browserFallback);
+        return;
+      }
       rec.onstop = async () => {
         rec.stream.getTracks().forEach(t => t.stop());
-        if (!audioChunksRef.current.length) { resolve(''); return; }
+        if (!audioChunksRef.current.length) {
+          // No audio chunks — use browser transcript
+          resolve(browserFallback);
+          return;
+        }
         setIsTranscribing(true);
         try {
           const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
@@ -292,11 +353,24 @@ export const LiveInterviewSession = () => {
           const res = await fetch(`${API_BASE}/api/interview/transcribe/`, {
             method: 'POST', headers: AuthService.getAuthHeaders(), body: fd,
           });
+          if (!res.ok) throw new Error('Cloud STT failed');
           const data = await res.json();
           const txt = data.text || '';
-          setTranscriptText(txt);
-          resolve(txt);
-        } catch { resolve(''); }
+          if (txt) {
+            setTranscriptText(txt);
+            resolve(txt);
+          } else {
+            // Cloud STT returned empty — use browser fallback
+            console.warn('[STT] Cloud returned empty, using browser transcript');
+            setTranscriptText(browserFallback);
+            resolve(browserFallback);
+          }
+        } catch {
+          // Cloud STT failed — fall back to browser Web Speech API transcript
+          console.warn('[STT] Cloud STT unavailable, using browser transcript fallback');
+          setTranscriptText(browserFallback);
+          resolve(browserFallback);
+        }
         finally { setIsTranscribing(false); }
       };
       rec.stop();
