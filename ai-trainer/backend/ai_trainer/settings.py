@@ -19,7 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ===========================================
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-r@jw1!^&#k%)04^gf3-p%nt*ue3tax2yycr#5utsp=m*m*w5rl')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,.onrender.com', cast=Csv())
 
 
 # ===========================================
@@ -201,8 +201,12 @@ GOOGLE_APPLICATION_CREDENTIALS = config('GOOGLE_APPLICATION_CREDENTIALS', defaul
 # Set the env var so Google SDK picks it up automatically
 import os as _os
 if GOOGLE_APPLICATION_CREDENTIALS:
-    # Resolve relative paths to absolute paths relative to BASE_DIR
-    if not _os.path.isabs(GOOGLE_APPLICATION_CREDENTIALS):
+    # Check Render's secret files location first
+    _render_secret = f'/etc/secrets/{GOOGLE_APPLICATION_CREDENTIALS}'
+    if _os.path.isfile(_render_secret):
+        GOOGLE_APPLICATION_CREDENTIALS = _render_secret
+    elif not _os.path.isabs(GOOGLE_APPLICATION_CREDENTIALS):
+        # Resolve relative paths to absolute paths relative to BASE_DIR
         GOOGLE_APPLICATION_CREDENTIALS = _os.path.normpath(_os.path.join(str(BASE_DIR), GOOGLE_APPLICATION_CREDENTIALS))
     _os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
 # Project ID for Cloud Speech-to-Text v2 API recognizer path
