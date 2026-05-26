@@ -23,3 +23,6 @@ python-multipart==0.0.6
 gTTS==2.3.2
 librosa==0.10.0
 soundfile==0.12.1
+psycopg2-binary>=2.9.5
+dj-database-url>=2.0.0
+
