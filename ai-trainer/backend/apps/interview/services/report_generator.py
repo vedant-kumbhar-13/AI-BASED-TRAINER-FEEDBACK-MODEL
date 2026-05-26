@@ -128,6 +128,12 @@ def _make_doc(buf: io.BytesIO, title: str) -> BaseDocTemplate:
         canvas.setFillColor(BLUE_DARK)
         canvas.drawCentredString(
             W / 2, H - _HEADER_IMG_H - 10,
+            "Department of Artificial Intelligence and Data Science",
+        )
+        canvas.setFont("Helvetica", 7.5)
+        canvas.setFillColor(GRAY_MID)
+        canvas.drawCentredString(
+            W / 2, H - _HEADER_IMG_H - 19,
             "AI-Based Pre-Placement Trainer & Feedback Model — Interview Performance Report",
         )
 
@@ -148,21 +154,26 @@ def _make_doc(buf: io.BytesIO, title: str) -> BaseDocTemplate:
         canvas.setFont("Helvetica", 6)
         canvas.setFillColor(GRAY_MID)
         canvas.drawCentredString(
-            W / 2, 6 * mm,
+            W / 2, 8 * mm,
             f"© {datetime.now().year} Vedant Kumbhar, Loukik Ingale, Meeraj Krishna — "
             "AI-Based Pre-Placement Trainer & Feedback Model. All Rights Reserved.",
+        )
+        canvas.setFont("Helvetica-Oblique", 5.5)
+        canvas.drawCentredString(
+            W / 2, 4.5 * mm,
+            "Under the guidance of Dr. Suraj Nalawade | Dept. of AI & Data Science",
         )
 
         canvas.restoreState()
 
-    top_margin = _HEADER_IMG_H + 14 * mm  # image + subtitle + gap
+    top_margin = _HEADER_IMG_H + 22 * mm  # image + subtitle + dept line + gap
     bottom_margin = _FOOTER_H + 4 * mm
 
     doc = BaseDocTemplate(
         buf,
         pagesize=A4,
         title=title,
-        author="AI Trainer — Yashoda Technical Campus",
+        author="AI Trainer — Dept. of AI & Data Science, Yashoda Technical Campus",
         topMargin=top_margin,
         bottomMargin=bottom_margin,
         leftMargin=margin,

@@ -3,10 +3,12 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Navigation } from '../components/dashboard/Navigation';
 import { 
   RotateCcw, ChevronDown, ChevronUp, 
-  CheckCircle, AlertTriangle, Trophy, ArrowRight, Home, Download
+  CheckCircle, AlertTriangle, Trophy, ArrowRight, Home, Download, Loader2
 } from 'lucide-react';
-import jsPDF from 'jspdf';
 import InterviewAPI from '../services/interviewAPI';
+import AuthService from '../services/authService';
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
 interface QuestionAnswer {
   question: {
@@ -111,311 +113,23 @@ export const InterviewFeedback = () => {
   const placement: string = evalData?.placement_readiness || '';
 
   const handleDownloadPDF = async () => {
+    if (!routeSessionId) return;
     setIsGeneratingPDF(true);
     try {
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const margin = 15;
-      const contentW = pageW - margin * 2;
-      let y = margin;
-
-      // ── Helper: add a new page if we're near the bottom ──
-      const checkPage = (needed: number) => {
-        if (y + needed > pageH - margin) {
-          pdf.addPage();
-          y = margin;
-        }
-      };
-
-      // ── Helper: draw wrapped text and return lines used ──
-      const drawWrapped = (text: string, x: number, _startY: number, maxW: number, lineH: number, fontSize: number): number => {
-        pdf.setFontSize(fontSize);
-        const lines = pdf.splitTextToSize(text, maxW);
-        for (const line of lines) {
-          checkPage(lineH);
-          pdf.text(line, x, y);
-          y += lineH;
-        }
-        return lines.length;
-      };
-
-      // ═══════════════════  HEADER  ═══════════════════
-      pdf.setFillColor(30, 58, 138); // Deep blue
-      pdf.rect(0, 0, pageW, 52, 'F');
-
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(16);
-      pdf.text('AI-BASED PRE-PLACEMENT TRAINER', pageW / 2, 15, { align: 'center' });
-      pdf.setFontSize(13);
-      pdf.text('& FEEDBACK MODEL', pageW / 2, 23, { align: 'center' });
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(9);
-      pdf.text('Using Mock Aptitude and Interview', pageW / 2, 30, { align: 'center' });
-
-      pdf.setDrawColor(255, 255, 255);
-      pdf.line(margin + 30, 34, pageW - margin - 30, 34);
-
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(11);
-      pdf.text('INTERVIEW PERFORMANCE REPORT', pageW / 2, 41, { align: 'center' });
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8);
-      pdf.text(`Generated on: ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`, pageW / 2, 48, { align: 'center' });
-
-      y = 60;
-      pdf.setTextColor(0, 0, 0);
-
-      // ═══════════════════  OVERALL SCORE  ═══════════════════
-      pdf.setFillColor(245, 247, 250);
-      pdf.roundedRect(margin, y, contentW, 28, 3, 3, 'F');
-
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(22);
-      pdf.text(`${overallScore !== undefined ? Math.round(overallScore) : 'N/A'}`, margin + 8, y + 14);
-      pdf.setFontSize(10);
-      pdf.text('/100  Overall Score', margin + 30, y + 14);
-
-      // Placement readiness badge
-      if (placement) {
-        pdf.setFontSize(9);
-        pdf.setTextColor(30, 58, 138);
-        pdf.text(`Placement: ${placement.replace(/_/g, ' ').toUpperCase()}`, pageW - margin - 5, y + 14, { align: 'right' });
-        pdf.setTextColor(0, 0, 0);
-      }
-
-      // Progress bar
-      pdf.setFillColor(220, 220, 220);
-      pdf.roundedRect(margin + 5, y + 20, contentW - 10, 4, 2, 2, 'F');
-      const barW = Math.max(0, Math.min(contentW - 10, ((overallScore || 0) / 100) * (contentW - 10)));
-      pdf.setFillColor(34, 197, 94); // green
-      if (barW > 0) pdf.roundedRect(margin + 5, y + 20, barW, 4, 2, 2, 'F');
-
-      y += 35;
-
-      // ═══════════════════  SCORE CARDS  ═══════════════════
-      const scores_arr = [
-        { label: 'Communication', value: communicationScore },
-        { label: 'Technical', value: technicalScore },
-        { label: 'Confidence', value: confidenceScore },
-        { label: 'Overall', value: overallScore },
-      ];
-
-      const cardW = (contentW - 9) / 4;
-      scores_arr.forEach((s, i) => {
-        const cx = margin + i * (cardW + 3);
-        pdf.setFillColor(248, 250, 252);
-        pdf.roundedRect(cx, y, cardW, 18, 2, 2, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(14);
-        pdf.text(`${s.value !== undefined ? Math.round(s.value) : 'N/A'}%`, cx + cardW / 2, y + 9, { align: 'center' });
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(7);
-        pdf.text(s.label, cx + cardW / 2, y + 15, { align: 'center' });
-      });
-
-      y += 25;
-
-      // ═══════════════════  STRENGTHS & IMPROVEMENTS  ═══════════════════
-      if (strengths.length > 0 || improvements.length > 0) {
-        checkPage(30);
-        const halfW = (contentW - 4) / 2;
-
-        // Strengths
-        pdf.setFillColor(240, 253, 244);
-        pdf.roundedRect(margin, y, halfW, 6, 2, 2, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        pdf.setTextColor(22, 163, 74);
-        pdf.text('STRENGTHS', margin + 3, y + 4);
-        pdf.setTextColor(0, 0, 0);
-
-        // Improvements
-        pdf.setFillColor(254, 252, 232);
-        pdf.roundedRect(margin + halfW + 4, y, halfW, 6, 2, 2, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        pdf.setTextColor(202, 138, 4);
-        pdf.text('AREAS TO IMPROVE', margin + halfW + 7, y + 4);
-        pdf.setTextColor(0, 0, 0);
-
-        y += 9;
-
-        // Draw strengths
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(8);
-        const savedY = y;
-        strengths.forEach((s: string) => {
-          checkPage(6);
-          const lines = pdf.splitTextToSize(`- ${s}`, halfW - 6);
-          lines.forEach((line: string) => {
-            pdf.text(line, margin + 3, y);
-            y += 4.5;
-          });
-        });
-        const leftEndY = y;
-
-        // Draw improvements (from same start position)
-        y = savedY;
-        improvements.forEach((s: string) => {
-          checkPage(6);
-          const lines = pdf.splitTextToSize(`- ${s}`, halfW - 6);
-          lines.forEach((line: string) => {
-            pdf.text(line, margin + halfW + 7, y);
-            y += 4.5;
-          });
-        });
-
-        y = Math.max(leftEndY, y) + 6;
-      }
-
-      // ═══════════════════  SUMMARY  ═══════════════════
-      if (summary) {
-        checkPage(20);
-        pdf.setFillColor(239, 246, 255);
-        pdf.roundedRect(margin, y, contentW, 6, 2, 2, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        pdf.setTextColor(30, 64, 175);
-        pdf.text('OVERALL ASSESSMENT', margin + 3, y + 4);
-        pdf.setTextColor(0, 0, 0);
-        y += 9;
-        pdf.setFont('helvetica', 'normal');
-        drawWrapped(summary, margin + 3, y, contentW - 6, 4.5, 8);
-        y += 4;
-      }
-
-      // ═══════════════════  RECOMMENDATIONS  ═══════════════════
-      if (recommendations.length > 0) {
-        checkPage(20);
-        pdf.setFillColor(245, 243, 255);
-        pdf.roundedRect(margin, y, contentW, 6, 2, 2, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        pdf.setTextColor(109, 40, 217);
-        pdf.text('RECOMMENDATIONS', margin + 3, y + 4);
-        pdf.setTextColor(0, 0, 0);
-        y += 9;
-        pdf.setFont('helvetica', 'normal');
-        recommendations.forEach((rec: string, i: number) => {
-          drawWrapped(`${i + 1}. ${rec}`, margin + 3, y, contentW - 6, 4.5, 8);
-          y += 1;
-        });
-        y += 3;
-      }
-
-      // ═══════════════════  QUESTION BREAKDOWN  ═══════════════════
-      checkPage(12);
-      pdf.setFillColor(30, 58, 138);
-      pdf.roundedRect(margin, y, contentW, 8, 2, 2, 'F');
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(10);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text('QUESTION-BY-QUESTION BREAKDOWN', margin + 5, y + 5.5);
-      pdf.setTextColor(0, 0, 0);
-      y += 12;
-
-      const questionResults: any[] = evalData?.question_results || [];
-
-      if (questionResults.length > 0) {
-        questionResults.forEach((qr: any) => {
-          checkPage(30);
-          // Question header
-          pdf.setFillColor(248, 250, 252);
-          pdf.roundedRect(margin, y, contentW, 7, 2, 2, 'F');
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(9);
-          pdf.text(`Q${qr.question_index}`, margin + 3, y + 5);
-          y += 10;
-
-          // Feedback
-          if (qr.feedback) {
-            pdf.setFont('helvetica', 'italic');
-            pdf.setFontSize(7.5);
-            pdf.setTextColor(55, 65, 81);
-            drawWrapped(qr.feedback, margin + 5, y, contentW - 10, 4, 7.5);
-            pdf.setTextColor(0, 0, 0);
-            y += 2;
-          }
-          // Strength
-          if (qr.strength) {
-            pdf.setFont('helvetica', 'normal');
-            pdf.setFontSize(7.5);
-            pdf.setTextColor(22, 163, 74);
-            drawWrapped(`+ ${qr.strength}`, margin + 5, y, contentW - 10, 4, 7.5);
-            pdf.setTextColor(0, 0, 0);
-          }
-          // Improvement
-          if (qr.improvement) {
-            pdf.setFont('helvetica', 'normal');
-            pdf.setFontSize(7.5);
-            pdf.setTextColor(202, 138, 4);
-            drawWrapped(`> ${qr.improvement}`, margin + 5, y, contentW - 10, 4, 7.5);
-            pdf.setTextColor(0, 0, 0);
-          }
-          y += 4;
-        });
-      } else if (answersData.length > 0) {
-        answersData.forEach((qa: QuestionAnswer) => {
-          checkPage(35);
-          // Question header
-          pdf.setFillColor(248, 250, 252);
-          pdf.roundedRect(margin, y, contentW, 7, 2, 2, 'F');
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(9);
-          pdf.text(`Q${qa.question.question_number}: ${qa.question.category}`, margin + 3, y + 5);
-          y += 10;
-
-          // Question text
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(8);
-          drawWrapped(qa.question.question_text, margin + 5, y, contentW - 10, 4, 8);
-          y += 2;
-
-          // Answer
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(7);
-          pdf.text('Your Answer:', margin + 5, y);
-          y += 4;
-          pdf.setFont('helvetica', 'normal');
-          drawWrapped(qa.answer || '[No answer provided]', margin + 5, y, contentW - 10, 4, 7.5);
-          y += 2;
-
-          // AI Feedback
-          if (qa.feedback?.ai_feedback) {
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(7);
-            pdf.text('AI Feedback:', margin + 5, y);
-            y += 4;
-            pdf.setFont('helvetica', 'italic');
-            pdf.setTextColor(30, 64, 175);
-            drawWrapped(qa.feedback.ai_feedback, margin + 5, y, contentW - 10, 4, 7.5);
-            pdf.setTextColor(0, 0, 0);
-          }
-          y += 5;
-          // Separator line
-          pdf.setDrawColor(230, 230, 230);
-          pdf.line(margin + 5, y, pageW - margin - 5, y);
-          y += 4;
-        });
-      }
-
-      // ═══════════════════  FOOTER  ═══════════════════
-      const totalPages = pdf.getNumberOfPages();
-      for (let p = 1; p <= totalPages; p++) {
-        pdf.setPage(p);
-        pdf.setFontSize(7);
-        pdf.setTextColor(150, 150, 150);
-        pdf.text(
-          `AI-Based Pre-Placement Trainer & Feedback Model  |  Page ${p} of ${totalPages}`,
-          pageW / 2, pageH - 6, { align: 'center' }
-        );
-      }
-
-      pdf.save(`AI_Interview_Report_${routeSessionId?.split('-')[0] || 'Result'}.pdf`);
+      const headers = AuthService.getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/interview/report/${routeSessionId}/`, { headers });
+      if (!res.ok) throw new Error('Failed to generate PDF');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `AI_Interview_Report_${routeSessionId.substring(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Error generating PDF:', error);
+      console.error('Error downloading PDF:', error);
     } finally {
       setIsGeneratingPDF(false);
     }
@@ -690,8 +404,8 @@ export const InterviewFeedback = () => {
                   : 'bg-green-600 hover:bg-green-700 text-white shadow-button'
               }`}
             >
-              <Download className="w-5 h-5" />
-              {isGeneratingPDF ? 'Generating...' : 'Download PDF Report'}
+              {isGeneratingPDF ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+              {isGeneratingPDF ? 'Downloading...' : 'Download PDF Report'}
             </button>
             <button
               onClick={() => navigate('/ai-interview')}

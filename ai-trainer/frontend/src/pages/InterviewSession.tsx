@@ -113,6 +113,9 @@ export const InterviewSessionPage = () => {
   const audioPlayerRef    = useRef<HTMLAudioElement | null>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const navigatingRef = useRef(false);
+  // GCS-07 fix: monotonically increasing ID to track which TTS call is current.
+  // Stale onDone callbacks from previous questions check this before starting mic.
+  const ttsIdRef = useRef(0);
   const MAX_RECORDING_SECS = 55;
   // Read input mode from navigation state (set on AIInterviewLanding)
   const inputMode = (location.state?.inputMode as 'voice' | 'text') || 'voice';
@@ -237,9 +240,22 @@ export const InterviewSessionPage = () => {
     if (!ttsEnabled || !text) return;
     setIsSpeaking(true);
 
+    // GCS-07 fix: increment ID so any previous speakText call knows it's stale
+    ttsIdRef.current++;
+    const myId = ttsIdRef.current;
+
     const onDone = () => {
+      // GCS-07 fix: only auto-start recording if THIS is still the active TTS call
+      if (ttsIdRef.current !== myId) return;
       setIsSpeaking(false);
-      if (inputMode === 'voice' && !navigatingRef.current) setTimeout(() => startRecording(), 500);
+      if (inputMode === 'voice' && !navigatingRef.current) {
+        setTimeout(() => {
+          // Double-check: still the active call AND not navigating
+          if (ttsIdRef.current === myId && !navigatingRef.current) {
+            startRecording();
+          }
+        }, 500);
+      }
     };
 
     // Attempt Cloud TTS first (enhancement — requires backend credentials)
@@ -277,6 +293,7 @@ export const InterviewSessionPage = () => {
   }, [ttsEnabled, inputMode, startRecording, browserTTS]);
 
   const stopSpeaking = () => {
+    ttsIdRef.current++;  // GCS-07 fix: invalidate any pending onDone callback
     audioPlayerRef.current?.pause();
     audioPlayerRef.current = null;
     browserTTS.stopSpeaking();
@@ -337,8 +354,8 @@ export const InterviewSessionPage = () => {
       setCurrentIdx(prev => prev + 1);
       setCurrentAnswer('');
       setTimer(0);
-      // Reset flag after a short delay so the NEXT question's TTS can auto-start recording
-      setTimeout(() => { navigatingRef.current = false; }, 800);
+      // GCS-07 fix: navigatingRef timeout reduced — ttsIdRef now handles stale callbacks
+      setTimeout(() => { navigatingRef.current = false; }, 0);
     }
   };
 

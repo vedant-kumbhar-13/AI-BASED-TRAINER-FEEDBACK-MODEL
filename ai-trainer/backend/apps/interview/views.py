@@ -505,6 +505,7 @@ def transcribe_audio(request):
     """POST /api/interview/transcribe/  — audio blob -> text via Cloud STT Chirp 2"""
     audio_file = request.FILES.get("audio")
     if not audio_file:
+        logger.warning("[transcribe] No audio file in request")
         return Response({"error": "No audio file. Send as multipart/form-data."}, status=400)
     # Guard: reject uploads > 10 MB (60s of WebM audio is ~1-2 MB)
     MAX_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -512,14 +513,18 @@ def transcribe_audio(request):
     if audio_file.size > MAX_AUDIO_BYTES:
         return Response({"error": "Audio file too large. Maximum 60 seconds of recording allowed."}, status=400)
     audio_bytes = audio_file.read()
+    logger.info("[transcribe] Received audio: name=%s, size=%d bytes, content_type=%s",
+                audio_file.name, len(audio_bytes), audio_file.content_type)
     if len(audio_bytes) < 100:
+        logger.warning("[transcribe] Audio too short: %d bytes", len(audio_bytes))
         return Response({"error": "Audio too short or empty."}, status=400)
     language = request.data.get("language", "en-IN")
     try:
         from .services.cloud_stt_service import transcribe_audio_bytes
         text = transcribe_audio_bytes(audio_bytes, language_code=language)
+        logger.info("[transcribe] Cloud STT result: '%s' (%d chars)", text[:100] if text else '', len(text) if text else 0)
     except Exception as e:
-        logger.error("Transcription failed: %s", e)
+        logger.error("[transcribe] Cloud STT FAILED: %s", e, exc_info=True)
         return Response({"error": f"Transcription failed: {e}"}, status=503)
     return Response({"text": text, "language": language})
 
@@ -651,13 +656,13 @@ def live_chat(request):
     if question_number < 1 or question_number > actual_answered + 1:
         return Response({'error': 'Invalid question_number'}, status=400)
 
-    # Save the answer
-    if current_question_id and answer_text:
+    # Save the answer (always save when question_id present — even empty answers should be recorded)
+    if current_question_id:
         try:
             current_q = InterviewQuestion.objects.get(id=current_question_id, session=session)
             InterviewAnswer.objects.update_or_create(
                 question=current_q,
-                defaults={'answer_text': answer_text, 'score': 0, 'ai_feedback': ''}
+                defaults={'answer_text': answer_text or '[No answer provided]', 'score': 0, 'ai_feedback': ''}
             )
             session.current_question_index = question_number
             session.save(update_fields=['current_question_index'])

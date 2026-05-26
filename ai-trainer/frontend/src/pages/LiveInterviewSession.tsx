@@ -16,7 +16,7 @@ interface Question { id: string; question_text: string; question_number: number;
 interface ChatMsg { role: 'interviewer' | 'you'; text: string; qNum?: number; }
 type Phase = 'init' | 'loading' | 'speaking' | 'countdown' | 'recording' | 'processing' | 'done' | 'submitting' | 'error';
 
-const SILENCE_MS = 2500;  // 2.5s silence triggers auto-submit (tuned for interviews)
+const SILENCE_MS = 4000;  // 4s silence triggers auto-submit (generous for interview thinking pauses)
 const MAX_DURATION_SECS = 300;  // 5 minutes max
 const MIN_SUBMIT_SECS = 60;    // Submit enabled after 1 min
 
@@ -54,6 +54,7 @@ export const LiveInterviewSession = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [transcriptText, setTranscriptText] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const displayedTranscriptRef = useRef<string>(''); // snapshot of what user sees on screen
   const [ttsUnavailable, setTtsUnavailable] = useState(false); // shown when TTS cannot play
 
   // Refs
@@ -71,6 +72,7 @@ export const LiveInterviewSession = () => {
   const silenceActiveRef = useRef(false);
   const finalizeCalledRef = useRef(false); // M7 fix: prevent double finalizeAnswer calls
   const browserTranscriptRef = useRef<string>(''); // Browser STT fallback transcript
+  const browserFinalRef = useRef<string>(''); // Only isFinal segments from browser STT
   const speechRecRef = useRef<any>(null); // SpeechRecognition instance
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
@@ -102,43 +104,58 @@ export const LiveInterviewSession = () => {
   useEffect(() => { if (transcriptEl.current) transcriptEl.current.scrollTop = transcriptEl.current.scrollHeight; }, [chatLog]);
 
   // ── TTS: Cloud API primary, browser speechSynthesis fallback ─────────────
+  // GCS-04 fix: removed async Promise executor anti-pattern that caused
+  // the interview to hang when audio.play() threw NotAllowedError.
   const speak = useCallback(async (text: string): Promise<void> => {
-    return new Promise(async (resolve) => {
-      // Attempt Cloud TTS (enhancement — needs backend credentials)
-      try {
-        const res = await fetch(`${API_BASE}/api/interview/tts/`, {
-          method: 'POST', headers: authHeaders(), body: JSON.stringify({ text }),
-        });
-        if (!res.ok) throw new Error('TTS failed');
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        if (audioRef.current) { audioRef.current.pause(); }
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => { URL.revokeObjectURL(url); setTtsUnavailable(false); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); setTtsUnavailable(false); resolve(); };
-        await audio.play();
-        return; // Cloud TTS succeeded
-      } catch {
-        console.warn('[TTS] Cloud TTS unavailable, falling back to browser speechSynthesis');
-      }
+    // Attempt Cloud TTS (enhancement — needs backend credentials)
+    try {
+      const res = await fetch(`${API_BASE}/api/interview/tts/`, {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error('TTS failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (audioRef.current) { audioRef.current.pause(); URL.revokeObjectURL(audioRef.current.src); }
+      const audio = new Audio(url);
+      audioRef.current = audio;
 
-      // Fallback: browser Web Speech API (always works, no credentials)
-      if (window.speechSynthesis) {
-        try {
-          const utt = new SpeechSynthesisUtterance(text);
-          utt.rate = 0.9;
-          await new Promise<void>(r => { utt.onend = () => r(); utt.onerror = () => r(); window.speechSynthesis.speak(utt); });
-          setTtsUnavailable(false);
-        } catch {
-          setTtsUnavailable(true);
-        }
-      } else {
-        // No TTS available at all — show text banner so user can read the question
-        setTtsUnavailable(true);
+      // GCS-04 fix: wrap play() in its own try/catch so NotAllowedError
+      // falls through to browser TTS instead of leaving Promise unresolved
+      try {
+        await audio.play();
+        await new Promise<void>(resolve => {
+          audio.onended = () => { URL.revokeObjectURL(url); setTtsUnavailable(false); resolve(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); setTtsUnavailable(false); resolve(); };
+        });
+        return; // Cloud TTS succeeded
+      } catch (playErr) {
+        URL.revokeObjectURL(url);
+        console.warn('[TTS] Audio play() blocked (autoplay policy), falling back to browser TTS', playErr);
+        // Fall through to browser TTS
       }
-      resolve();
-    });
+    } catch {
+      console.warn('[TTS] Cloud TTS unavailable, falling back to browser speechSynthesis');
+    }
+
+    // Fallback: browser Web Speech API (always works, no credentials)
+    // GCS-10 fix: added Chrome keep-alive setInterval to prevent long questions
+    // from silently cutting off after ~15 words.
+    if (window.speechSynthesis) {
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.rate = 0.9;
+      utt.pitch = 1.0;
+      const ping = setInterval(() => {
+        if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+      }, 5000);
+      await new Promise<void>(resolve => {
+        utt.onend = () => { clearInterval(ping); setTtsUnavailable(false); resolve(); };
+        utt.onerror = () => { clearInterval(ping); setTtsUnavailable(false); resolve(); };
+        window.speechSynthesis.speak(utt);
+      });
+    } else {
+      // No TTS available at all — show text banner so user can read the question
+      setTtsUnavailable(true);
+    }
   }, []);
 
   const stopSpeaking = useCallback(() => {
@@ -162,6 +179,8 @@ export const LiveInterviewSession = () => {
     try { speechRecRef.current?.stop(); } catch { /* already stopped */ }
     speechRecRef.current = null;
     browserTranscriptRef.current = '';
+    browserFinalRef.current = '';
+    displayedTranscriptRef.current = '';
   }, []);
 
   // ── STT via MediaRecorder + Cloud API ────────────────────────────
@@ -175,13 +194,20 @@ export const LiveInterviewSession = () => {
       const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
       const rec = new MediaRecorder(stream, { mimeType: mime });
       audioChunksRef.current = [];
-      rec.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+          console.log(`[MediaRecorder] chunk received: ${e.data.size} bytes, total chunks: ${audioChunksRef.current.length}`);
+        }
+      };
       mediaRecRef.current = rec;
-      rec.start();
+      // Use timeslice=1000ms so chunks accumulate during recording, not just on stop()
+      rec.start(1000);
+      console.log('[MediaRecorder] started recording with timeslice=1000ms, mime:', mime);
 
-      // ── Browser SpeechRecognition fallback (runs in parallel) ──
-      // Captures live transcript so we have text even if Cloud STT fails
+      // ── Browser SpeechRecognition (runs in parallel for live display + fallback) ──
       browserTranscriptRef.current = '';
+      browserFinalRef.current = '';
       try {
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (SpeechRecognition) {
@@ -199,10 +225,13 @@ export const LiveInterviewSession = () => {
                 interim += event.results[i][0].transcript;
               }
             }
+            // Store both combined (for display) and final-only (for reliable fallback)
             browserTranscriptRef.current = (finalTranscript + interim).trim();
+            browserFinalRef.current = finalTranscript.trim();
             // Show live transcript in the UI while recording
             if (browserTranscriptRef.current) {
               setTranscriptText(browserTranscriptRef.current);
+              displayedTranscriptRef.current = browserTranscriptRef.current;
             }
           };
           sr.onerror = () => { /* silently ignore — Cloud STT is primary */ };
@@ -242,7 +271,7 @@ export const LiveInterviewSession = () => {
 
       // Calibration state
       const calibrationStart = Date.now();
-      const CALIBRATION_MS = 800; // measure baseline for 0.8 seconds (faster start)
+      const CALIBRATION_MS = 1000; // GCS-12 fix: 1s calibration for better noise sampling
       let baselineSamples: number[] = [];
       let dynamicThreshold = 12; // fallback if calibration fails
       let isCalibrated = false;
@@ -284,7 +313,8 @@ export const LiveInterviewSession = () => {
             lastSpeechTime = Date.now(); // reset so silence timer starts fresh after calibration
             console.log(`[VAD] Calibrated: p75=${p75.toFixed(1)}, threshold=${dynamicThreshold.toFixed(1)}`);
           }
-          silenceRafRef.current = requestAnimationFrame(check);
+          // GCS-12 fix: throttle to ~20fps to match audio analyser update rate
+          silenceRafRef.current = requestAnimationFrame(() => { setTimeout(check, 50); });
           return;
         }
 
@@ -301,14 +331,15 @@ export const LiveInterviewSession = () => {
           speechFrameCount = Math.max(0, speechFrameCount - 2);
         }
 
-        // Trigger silence detection only after confirmed speech AND minimum 2s recording
+        // Trigger silence detection only after confirmed speech AND minimum 5s recording
         const elapsedRecording = Date.now() - recordingStart;
-        if (hasSpokenEnough && elapsedRecording > 2000 && Date.now() - lastSpeechTime > SILENCE_MS) {
+        if (hasSpokenEnough && elapsedRecording > 5000 && Date.now() - lastSpeechTime > SILENCE_MS) {
           finalizeAnswer();
           return;
         }
 
-        silenceRafRef.current = requestAnimationFrame(check);
+        // GCS-12 fix: throttle to ~20fps to match audio analyser update rate
+        silenceRafRef.current = requestAnimationFrame(() => { setTimeout(check, 50); });
       };
       check();
     } catch { setErrorMsg('Microphone access denied.'); setPhase('error'); }
@@ -322,56 +353,90 @@ export const LiveInterviewSession = () => {
     try { silenceStreamRef.current?.getTracks().forEach(t => t.stop()); } catch { /* already stopped */ }
     silenceStreamRef.current = null;
 
-    // Stop browser SpeechRecognition
+    // Capture ALL fallback sources BEFORE stopping anything
+    const browserFallback = browserTranscriptRef.current || '';
+    const browserFinalFallback = browserFinalRef.current || '';
+    const displayedFallback = displayedTranscriptRef.current || '';
+
+    // Stop browser SpeechRecognition AFTER capturing its transcript
     try { speechRecRef.current?.stop(); } catch { /* already stopped */ }
     speechRecRef.current = null;
 
-    // Capture browser transcript before async operations
-    const browserFallback = browserTranscriptRef.current || '';
+    // Pick the best non-empty browser fallback text
+    const bestBrowserText = browserFinalFallback || browserFallback || displayedFallback;
+    console.log('[stopRecording] fallback texts:', {
+      browserFinal: browserFinalFallback.substring(0, 40),
+      browserFull: browserFallback.substring(0, 40),
+      displayed: displayedFallback.substring(0, 40),
+      bestBrowser: bestBrowserText.substring(0, 40),
+      audioChunks: audioChunksRef.current.length,
+    });
 
-    setTranscriptText(''); // I7 fix: clear transcript immediately before async STT
     return new Promise(async (resolve) => {
       const rec = mediaRecRef.current;
       if (!rec || rec.state === 'inactive') {
-        // No recording — use browser transcript if available
-        resolve(browserFallback);
+        console.warn('[stopRecording] MediaRecorder inactive, using bestBrowserText');
+        resolve(bestBrowserText);
         return;
       }
+
+      // Collect final data before stopping
       rec.onstop = async () => {
         rec.stream.getTracks().forEach(t => t.stop());
-        if (!audioChunksRef.current.length) {
-          // No audio chunks — use browser transcript
-          resolve(browserFallback);
+        const totalChunks = audioChunksRef.current.length;
+        const totalBytes = audioChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0);
+        console.log(`[stopRecording] MediaRecorder stopped: ${totalChunks} chunks, ${totalBytes} bytes`);
+
+        if (!totalChunks || totalBytes < 100) {
+          console.warn('[stopRecording] No/tiny audio data, using bestBrowserText');
+          resolve(bestBrowserText);
           return;
         }
+
+        // Send to Cloud STT
         setIsTranscribing(true);
         try {
           const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
           const blob = new Blob(audioChunksRef.current, { type: mime });
+          console.log(`[stopRecording] Sending ${blob.size} bytes (${mime}) to Cloud STT...`);
           const fd = new FormData();
-          fd.append('audio', blob, 'rec.webm');
+          fd.append('audio', blob, mime === 'audio/webm' ? 'rec.webm' : 'rec.ogg');
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
           const res = await fetch(`${API_BASE}/api/interview/transcribe/`, {
             method: 'POST', headers: AuthService.getAuthHeaders(), body: fd,
+            signal: controller.signal,
           });
-          if (!res.ok) throw new Error('Cloud STT failed');
+          clearTimeout(timeoutId);
+
+          if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            console.error(`[stopRecording] Cloud STT HTTP ${res.status}:`, errBody);
+            throw new Error(`Cloud STT HTTP ${res.status}`);
+          }
           const data = await res.json();
-          const txt = data.text || '';
+          const txt = (data.text || '').trim();
+          console.log('[stopRecording] Cloud STT response:', { text: txt.substring(0, 80), language: data.language });
+
           if (txt) {
             setTranscriptText(txt);
             resolve(txt);
-          } else {
-            // Cloud STT returned empty — use browser fallback
-            console.warn('[STT] Cloud returned empty, using browser transcript');
-            setTranscriptText(browserFallback);
-            resolve(browserFallback);
+            return;
           }
-        } catch {
-          // Cloud STT failed — fall back to browser Web Speech API transcript
-          console.warn('[STT] Cloud STT unavailable, using browser transcript fallback');
-          setTranscriptText(browserFallback);
-          resolve(browserFallback);
+          // Cloud STT returned empty — use browser fallback
+          console.warn('[stopRecording] Cloud STT returned empty, using bestBrowserText');
+        } catch (err) {
+          console.error('[stopRecording] Cloud STT error:', err);
         }
         finally { setIsTranscribing(false); }
+
+        // Fallback: use best browser text
+        if (bestBrowserText) {
+          console.log('[stopRecording] Using browser fallback:', bestBrowserText.substring(0, 60));
+          setTranscriptText(bestBrowserText);
+        }
+        resolve(bestBrowserText);
       };
       rec.stop();
     });
@@ -417,6 +482,9 @@ export const LiveInterviewSession = () => {
   const askQuestion = useCallback(async (q: Question) => {
     setCurrentQ(q);
     setTranscriptText('');
+    displayedTranscriptRef.current = '';
+    browserTranscriptRef.current = '';
+    browserFinalRef.current = '';
     finalizeCalledRef.current = false; // M7 fix: reset for new question
     setChatLog(prev => [...prev, { role: 'interviewer', text: q.question_text, qNum: q.question_number }]);
     setPhase('speaking');
@@ -436,7 +504,24 @@ export const LiveInterviewSession = () => {
     if (finalizeCalledRef.current) return;
     finalizeCalledRef.current = true;
     setPhase('processing');
-    const answerText = await stopRecording() || '[No answer provided]';
+
+    // Snapshot the displayed transcript BEFORE stopping — ultimate last-resort fallback
+    const preStopSnapshot = displayedTranscriptRef.current || '';
+    console.log('[finalizeAnswer] pre-stop snapshot:', preStopSnapshot.substring(0, 80));
+
+    let answerText = await stopRecording();
+    console.log('[finalizeAnswer] stopRecording returned:', (answerText || '').substring(0, 80));
+
+    // Triple fallback: stopRecording result → pre-stop snapshot → '[No answer provided]'
+    if (!answerText || !answerText.trim()) {
+      console.warn('[finalizeAnswer] stopRecording returned empty, using pre-stop snapshot');
+      answerText = preStopSnapshot;
+    }
+    if (!answerText || !answerText.trim()) {
+      console.error('[finalizeAnswer] ALL fallbacks empty — no answer captured');
+      answerText = '[No answer provided]';
+    }
+    console.log('[finalizeAnswer] FINAL answer text:', answerText.substring(0, 100));
     const q = currentQRef.current!;
 
     // Detect user intent

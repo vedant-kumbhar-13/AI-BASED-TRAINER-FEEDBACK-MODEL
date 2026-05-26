@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloud STT Debug Tool</title>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f7fa; color: #1a1a2e; }
+  h1 { color: #2d3436; margin-bottom: 8px; }
+  .subtitle { color: #636e72; margin-bottom: 24px; }
+  .card { background: white; border-radius: 16px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,.06); border: 1px solid #e0e0e0; }
+  button { padding: 12px 24px; border: none; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 15px; transition: all .2s; }
+  .btn-record { background: #e63946; color: white; }
+  .btn-record:hover { background: #c1121f; }
+  .btn-stop { background: #2d6a4f; color: white; }
+  .btn-stop:hover { background: #1b4332; }
+  .btn-send { background: #3b82f6; color: white; }
+  .btn-send:hover { background: #2563eb; }
+  .btn-test-tts { background: #7c3aed; color: white; }
+  .btn-test-tts:hover { background: #6d28d9; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #log { background: #1a1a2e; color: #00ff88; border-radius: 12px; padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 13px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; line-height: 1.6; }
+  #browserTranscript, #cloudResult { margin-top: 8px; padding: 12px; border-radius: 8px; min-height: 60px; font-size: 14px; }
+  #browserTranscript { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+  #cloudResult { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+  label { font-weight: 600; font-size: 13px; color: #636e72; text-transform: uppercase; letter-spacing: .5px; display: block; margin-bottom: 6px; }
+  .status { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+  .status-idle { background: #f0f0f0; color: #666; }
+  .status-recording { background: #fee2e2; color: #dc2626; animation: pulse 1s infinite; }
+  .status-transcribing { background: #dbeafe; color: #2563eb; }
+  .status-done { background: #dcfce7; color: #16a34a; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+  .flex { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .auth-input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; width: 100%; }
+</style>
+</head>
+<body>
+<h1>🔬 Cloud STT Debug Tool</h1>
+<p class="subtitle">Tests MediaRecorder → Cloud STT pipeline directly, bypassing the interview flow</p>
+
+<div class="card">
+  <label>Auth Token (paste your JWT access token)</label>
+  <input type="text" id="authToken" class="auth-input" placeholder="eyJ..." />
+  <p style="font-size: 12px; color: #999; margin-top: 4px;">Open DevTools > Application > Local Storage > look for "access" or "token" key</p>
+</div>
+
+<div class="card">
+  <div class="flex" style="margin-bottom: 16px;">
+    <button id="btnRecord" class="btn-record" onclick="startRec()">🎙️ Record</button>
+    <button id="btnStop" class="btn-stop" onclick="stopRec()" disabled>⏹️ Stop</button>
+    <button id="btnSend" class="btn-send" onclick="sendToCloud()" disabled>☁️ Send to Cloud STT</button>
+    <button class="btn-test-tts" onclick="testTTS()">🔊 Test TTS</button>
+    <span id="status" class="status status-idle">Idle</span>
+  </div>
+
+  <label>Browser SpeechRecognition (live)</label>
+  <div id="browserTranscript">Waiting...</div>
+
+  <label style="margin-top: 16px;">Cloud STT Result</label>
+  <div id="cloudResult">Waiting for audio...</div>
+</div>
+
+<div class="card">
+  <label>Debug Log</label>
+  <div id="log"></div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+let rec = null, chunks = [], sr = null, browserText = '', finalText = '';
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString();
+  el.textContent += `[${ts}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'status status-' + cls;
+}
+
+function getHeaders() {
+  const token = document.getElementById('authToken').value.trim();
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
+async function startRec() {
+  log('Starting recording...');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    log('Microphone access granted');
+
+    // MediaRecorder
+    const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+    log('Using MIME type: ' + mime);
+    rec = new MediaRecorder(stream, { mimeType: mime });
+    chunks = [];
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        chunks.push(e.data);
+        log(`Chunk: ${e.data.size} bytes (total: ${chunks.length} chunks)`);
+      }
+    };
+    rec.start(1000); // timeslice = 1s
+    log('MediaRecorder started with timeslice=1000ms');
+
+    // Browser SpeechRecognition
+    browserText = '';
+    finalText = '';
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR) {
+      sr = new SR();
+      sr.continuous = true;
+      sr.interimResults = true;
+      sr.lang = 'en-IN';
+      sr.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            finalText += event.results[i][0].transcript + ' ';
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        browserText = (finalText + interim).trim();
+        document.getElementById('browserTranscript').textContent = browserText;
+      };
+      sr.onerror = (e) => log('SpeechRecognition error: ' + e.error);
+      sr.onend = () => { if (rec && rec.state === 'recording') { try { sr.start(); } catch {} } };
+      sr.start();
+      log('Browser SpeechRecognition started');
+    } else {
+      log('WARNING: Browser does not support SpeechRecognition');
+    }
+
+    setStatus('Recording', 'recording');
+    document.getElementById('btnRecord').disabled = true;
+    document.getElementById('btnStop').disabled = false;
+  } catch (e) {
+    log('ERROR: ' + e.message);
+  }
+}
+
+function stopRec() {
+  log('Stopping recording...');
+  // Capture browser text BEFORE stopping
+  const capturedBrowser = browserText;
+  const capturedFinal = finalText.trim();
+  log(`Browser transcript (full): "${capturedBrowser}"`);
+  log(`Browser transcript (final only): "${capturedFinal}"`);
+
+  if (sr) { try { sr.stop(); } catch {} sr = null; }
+  if (rec && rec.state === 'recording') {
+    rec.stop();
+    rec.stream.getTracks().forEach(t => t.stop());
+  }
+  
+  setStatus('Stopped', 'idle');
+  document.getElementById('btnRecord').disabled = false;
+  document.getElementById('btnStop').disabled = true;
+  document.getElementById('btnSend').disabled = false;
+
+  const totalBytes = chunks.reduce((s, c) => s + c.size, 0);
+  log(`Recording stopped: ${chunks.length} chunks, ${totalBytes} bytes total`);
+}
+
+async function sendToCloud() {
+  if (!chunks.length) { log('No audio chunks!'); return; }
+  
+  const token = document.getElementById('authToken').value.trim();
+  if (!token) { log('ERROR: No auth token! Paste your JWT token first.'); return; }
+
+  setStatus('Transcribing...', 'transcribing');
+  document.getElementById('btnSend').disabled = true;
+
+  const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+  const blob = new Blob(chunks, { type: mime });
+  log(`Sending ${blob.size} bytes (${mime}) to ${API}/api/interview/transcribe/`);
+
+  const fd = new FormData();
+  fd.append('audio', blob, mime === 'audio/webm' ? 'rec.webm' : 'rec.ogg');
+
+  try {
+    const startTime = Date.now();
+    const res = await fetch(`${API}/api/interview/transcribe/`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: fd,
+    });
+    const elapsed = Date.now() - startTime;
+    log(`Response: HTTP ${res.status} (${elapsed}ms)`);
+
+    const data = await res.json();
+    log(`Result: ${JSON.stringify(data)}`);
+    
+    document.getElementById('cloudResult').textContent = data.text || data.error || 'Empty response';
+    
+    if (data.text) {
+      setStatus('Done ✓', 'done');
+      log(`SUCCESS: Cloud STT returned "${data.text}"`);
+    } else {
+      setStatus('Empty result', 'idle');
+      log('WARNING: Cloud STT returned empty text');
+    }
+  } catch (e) {
+    log('ERROR sending to Cloud STT: ' + e.message);
+    document.getElementById('cloudResult').textContent = 'Error: ' + e.message;
+    setStatus('Error', 'idle');
+  }
+  document.getElementById('btnSend').disabled = false;
+}
+
+async function testTTS() {
+  log('Testing Cloud TTS...');
+  const token = document.getElementById('authToken').value.trim();
+  if (!token) { log('ERROR: No auth token!'); return; }
+
+  try {
+    const res = await fetch(`${API}/api/interview/tts/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getHeaders() },
+      body: JSON.stringify({ text: 'Hello, this is a test of the Cloud Text-to-Speech service.' }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      log(`TTS failed: HTTP ${res.status} - ${err}`);
+      return;
+    }
+    const blob = await res.blob();
+    log(`TTS success: ${blob.size} bytes of audio`);
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => { URL.revokeObjectURL(url); log('TTS playback completed'); };
+    audio.play();
+    log('Playing TTS audio...');
+  } catch (e) {
+    log('TTS error: ' + e.message);
+  }
+}
+
+// Auto-fill token from localStorage
+try {
+  const stored = localStorage.getItem('access') || localStorage.getItem('token') || '';
+  if (stored) {
+    document.getElementById('authToken').value = stored;
+    log('Auto-filled auth token from localStorage');
+  }
+} catch {}
+log('Debug tool ready. Click Record to begin.');
+</script>
+</body>
+</html>
