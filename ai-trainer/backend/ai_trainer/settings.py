@@ -188,7 +188,10 @@ GOOGLE_APPLICATION_CREDENTIALS = config('GOOGLE_APPLICATION_CREDENTIALS', defaul
 # Set the env var so Google SDK picks it up automatically
 import os as _os
 if GOOGLE_APPLICATION_CREDENTIALS:
-    _os.environ.setdefault('GOOGLE_APPLICATION_CREDENTIALS', GOOGLE_APPLICATION_CREDENTIALS)
+    # Resolve relative paths to absolute paths relative to BASE_DIR
+    if not _os.path.isabs(GOOGLE_APPLICATION_CREDENTIALS):
+        GOOGLE_APPLICATION_CREDENTIALS = _os.path.normpath(_os.path.join(str(BASE_DIR), GOOGLE_APPLICATION_CREDENTIALS))
+    _os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
 # Project ID for Cloud Speech-to-Text v2 API recognizer path
 GOOGLE_CLOUD_PROJECT = config('GOOGLE_CLOUD_PROJECT', default='')
 # I3 fix: configurable region for Cloud STT/TTS (default: us-central1)
