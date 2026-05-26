@@ -1,3 +1,4 @@
+import React from 'react';
 import { Link } from 'react-router-dom';
 
 interface DashboardSidebarProps {
@@ -100,7 +101,7 @@ export const DashboardSidebar = ({ isOpen, activeModule, onModuleChange }: Dashb
 
 // Icon Component Helper
 const IconComponent = ({ iconName }: { iconName: string }) => {
-  const icons: Record<string, JSX.Element> = {
+  const icons: Record<string, React.ReactElement> = {
     grid: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6z" />
