@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Navigation } from '../components/dashboard/Navigation';
-import { Sparkles, Upload, Zap, Users, Code, MessageSquare, ArrowRight, Mic } from 'lucide-react';
+import { Sparkles, Upload, Zap, Users, Code, MessageSquare, ArrowRight } from 'lucide-react';
 
 const INTERVIEW_TYPES = [
   {
